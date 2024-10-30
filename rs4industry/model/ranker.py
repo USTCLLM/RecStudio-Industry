@@ -106,26 +106,37 @@ class BaseRanker(BaseModel):
     
 
     @torch.no_grad()
-    def predict(self, batch: Dict, candidates: Dict, topk: int, gpu_mem_save=False, *args, **kwargs):
+    def predict(self, context_input: Dict, candidates: Dict, topk: int, gpu_mem_save=False, *args, **kwargs):
+        """ predict topk candidates for each context
+        
+        Args:
+            context_input (Dict): input context feature
+            candidates (Dict): candidate items
+            topk (int): topk candidates
+            gpu_mem_save (bool): whether to save gpu memroy by using loop to process each candidate
+
+        Returns:
+            torch.Tensor: topk indices (offset instead of real item id)
+        """
         num_candidates = candidates[self.fiid].size(1)
         if not gpu_mem_save:
             # expand batch to match the number of candidates, consuming more memory
             batch_size = candidates[self.fiid].size(0)
-            for k, v in batch.items():
+            for k, v in context_input.items():
                 # B, * -> BxN, *
-                batch[k] = v.expand(num_candidates, *v.shape[1:])
+                context_input[k] = v.expand(num_candidates, *v.shape[1:])
             for k, v in candidates.items():
                 # B, N, * -> BxN, *
                 candidates[k] = v.view(-1, *v.shape[2:])
-            batch.update(candidates)    # {key: BxN, *}
-            output = self.score(batch, *args, **kwargs)
+            context_input.update(candidates)    # {key: BxN, *}
+            output = self.score(context_input, *args, **kwargs)
             scores = output.score.view(batch_size, num_candidates)  # [B, N]
         else:
             # use loop to process each candidate
             scores = []
             for i in range(num_candidates):
                 candidate = {k: v[:, i] for k, v in candidates.items()}
-                new_batch = dict(**batch)
+                new_batch = dict(**context_input)
                 new_batch.update(candidate)
                 output = self.score(new_batch, *args, **kwargs)
                 scores.append(output.score)

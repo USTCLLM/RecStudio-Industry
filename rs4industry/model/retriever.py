@@ -154,7 +154,7 @@ class BaseRetriever(BaseModel):
 
 
     @torch.no_grad()
-    def predict(self, context_input: dict) -> torch.Tensor:
+    def encode_query(self, context_input: dict) -> torch.Tensor:
         """ Encode context input, output vectors.
         Args:
             context_input (dict): context input features, e.g., user_id, session_id, etc.
@@ -163,6 +163,27 @@ class BaseRetriever(BaseModel):
         """
         context_vec = self.query_encoder(context_input)
         return context_vec
+    
+
+    @torch.no_grad()
+    def predict(self, context_input: Dict, candidates: Dict, topk: int, *args, **kwargs):
+        """ predict topk candidates for each context
+        
+        Args:
+            context_input (Dict): input context feature
+            candidates (Dict): candidate items
+            topk (int): topk candidates
+
+        Returns:
+            torch.Tensor: topk indices (offset instead of real item id)
+        """
+        query_vec = self.query_encoder(context_input)
+        candidate_item_vec = self.item_encoder(candidates)  # [B, N, D]
+
+        scores = self.score_function(query_vec, candidate_item_vec)
+        # get topk idx
+        topk_score, topk_idx = torch.topk(scores, topk)
+        return topk_idx
 
     def get_item_feat(self, item_dataset: ItemDataset, item_id: torch.tensor):
         """

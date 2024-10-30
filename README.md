@@ -41,7 +41,27 @@ model = MLPRanker(data_config, model_config_path)
 trainer.fit(train_data, eval_data)
 ```
 
+### 模型加载与推理
+1. 模型加载
+加载训练好的模型需要给定checkpoint路径, 示例如下:
 
+```python
+from rs4industry.model.base import BaseModel
+
+model = BaseModel.from_pretrained("./saves/mlp_test/checkpoints-150")
+
+print(model)
+```
+
+加载过程中会根据配置文件自动加载模型结构和参数.
+
+2. 模型推理
+对于召回模型和排序模型, 其推理的接口不同. 对于召回模型, 其存在两个推理接口, 分别用于召回阶段和粗排阶段.
+
+- `model.encode_query`: 用于将给定的context字典编码为向量,context中每个字典的tensor形状为 [B, *]
+- `model.predict`: 用于为每个context, 对candidate进行topk选择, 返回排序后的indices (不是真实的item id,而是candidate中的下标). 
+
+对于排序模型,只存在 `model.predict` 接口,和召回模型的接口用法一致.
 
 ## 开发目标
 ### 训练
