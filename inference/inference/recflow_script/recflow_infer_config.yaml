@@ -1,0 +1,9 @@
+stage: rank 
+model_path: saved_model_demo/rank_model_onnx_demo.pb
+feature_config_path: saved_model_demo/rank_feature_config_demo.yaml
+feature_cache_config_path: inference/feature_insert/feature_cache_configs/recflow_feature_cache_config.yaml
+inference_dataset_path: inference/inference_data/recflow/recflow_infer_data.feather
+candidates_path: inference/inference_data/recflow/candidates_demo.feather
+output_topk: 10
+request_features: ['user_id', 'request_timestamp']
+infer_batch_size: 128

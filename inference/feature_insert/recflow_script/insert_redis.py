@@ -7,7 +7,7 @@ from inference.feature_insert.protos import recflow_pb2
 import numpy as np
 import pandas as pd  
 from tqdm import tqdm
-
+import yaml 
 
 # connect to Redis
 r = redis.Redis(host='localhost', port=6379, db=0)
@@ -62,3 +62,27 @@ for row in tqdm(test_user_info):
     r.set(f"recflow:user_timestamp:{row[1]}_{row[2]}", serialized_data)
 
 print("UserTimestamp features are stored in Redis.")
+
+# create feature cache config 
+final_dict = {}
+final_dict['host'] = r.get_connection_kwargs()['host']
+final_dict['port'] = r.get_connection_kwargs()['port']
+final_dict['db'] = r.get_connection_kwargs()['db']
+feat_dict = {}
+for col in test_video_info.columns:
+    feat_dict[col.strip(' ')] = {}
+    feat_dict[col.strip(' ')]['key_temp'] = 'recflow:item:{video_id}'
+    feat_dict[col.strip(' ')]['field'] = col.strip(' ')
+for col in ['request_id', 'user_id', 'request_timestamp', 'device_id', 'age', 'gender', 'province', 'seq_effective_50']:
+    feat_dict[col.strip(' ')] = {}
+    feat_dict[col.strip(' ')]['key_temp'] = 'recflow:user_timestamp:{user_id}_{request_timestamp}'
+    feat_dict[col.strip(' ')]['field'] = col.strip(' ')
+final_dict['features'] = feat_dict 
+final_dict['key_temp2proto'] = {
+    'recflow:item:{video_id}' : {'class_name': 'Item', 'module_path': recflow_pb2.__file__},
+    'recflow:user_timestamp:{user_id}_{request_timestamp}' : {'class_name': 'UserTimestamp', 'module_path': recflow_pb2.__file__}
+}
+
+# save dict as yaml 
+with open('./inference/feature_insert/feature_cache_configs/recflow_feature_cache_config.yaml', 'w') as file:
+    yaml.dump(final_dict, file, default_flow_style=False, allow_unicode=True, sort_keys=False)

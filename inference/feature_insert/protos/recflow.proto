@@ -1,0 +1,23 @@
+syntax = "proto3"; // 指定protobuf的版本
+
+package example;
+
+message Item {
+  int64 video_id = 1;
+  int64 author_id = 2;
+  int64 category_level_two = 3;
+  int64 upload_type = 4;
+  int64 upload_timestamp = 5;
+  int64 category_level_one = 6;
+}
+
+message UserTimestamp {
+  int64 request_id = 1;          
+  int64 user_id = 2;             
+  int64 request_timestamp = 3;    
+  int64 device_id = 4;           
+  int32 age = 5;                  
+  int64 gender = 6;              
+  int64 province = 7;
+  repeated int64 seq_effective_50 = 8;
+}

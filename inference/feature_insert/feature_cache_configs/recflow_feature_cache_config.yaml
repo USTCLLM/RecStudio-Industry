@@ -1,0 +1,53 @@
+host: localhost
+port: 6379
+db: 0
+features:
+  video_id:
+    key_temp: recflow:item:{video_id}
+    field: video_id
+  author_id:
+    key_temp: recflow:item:{video_id}
+    field: author_id
+  category_level_two:
+    key_temp: recflow:item:{video_id}
+    field: category_level_two
+  upload_type:
+    key_temp: recflow:item:{video_id}
+    field: upload_type
+  upload_timestamp:
+    key_temp: recflow:item:{video_id}
+    field: upload_timestamp
+  category_level_one:
+    key_temp: recflow:item:{video_id}
+    field: category_level_one
+  request_id:
+    key_temp: recflow:user_timestamp:{user_id}_{request_timestamp}
+    field: request_id
+  user_id:
+    key_temp: recflow:user_timestamp:{user_id}_{request_timestamp}
+    field: user_id
+  request_timestamp:
+    key_temp: recflow:user_timestamp:{user_id}_{request_timestamp}
+    field: request_timestamp
+  device_id:
+    key_temp: recflow:user_timestamp:{user_id}_{request_timestamp}
+    field: device_id
+  age:
+    key_temp: recflow:user_timestamp:{user_id}_{request_timestamp}
+    field: age
+  gender:
+    key_temp: recflow:user_timestamp:{user_id}_{request_timestamp}
+    field: gender
+  province:
+    key_temp: recflow:user_timestamp:{user_id}_{request_timestamp}
+    field: province
+  seq_effective_50:
+    key_temp: recflow:user_timestamp:{user_id}_{request_timestamp}
+    field: seq_effective_50
+key_temp2proto:
+  recflow:item:{video_id}:
+    class_name: Item
+    module_path: /data1/home/recstudio/xiaolong/rec-studio-industry/inference/feature_insert/protos/recflow_pb2.py
+  recflow:user_timestamp:{user_id}_{request_timestamp}:
+    class_name: UserTimestamp
+    module_path: /data1/home/recstudio/xiaolong/rec-studio-industry/inference/feature_insert/protos/recflow_pb2.py
