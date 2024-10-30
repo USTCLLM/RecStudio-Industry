@@ -1,0 +1,8 @@
+{
+    "embedding_dim": 2,
+    "mlp_layers": [16, 16],
+    "prediction_layers": [16],
+    "activation": "relu",
+    "dropout": 0.3,
+    "batch_norm": true
+}

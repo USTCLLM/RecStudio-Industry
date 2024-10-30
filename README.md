@@ -1,5 +1,48 @@
 # RecStudio-Industry
 
+
+## 快速入门
+
+### 训练数据准备
+按照[示例](./rs4industry/data/README_zh.md)准备好数据配置json文件.
+
+### 训练和模型配置
+需要配置训练配置(超参数等)和模型配置(模型结构参数,如hidden size等,根据具体模型而定).
+
+### 模型训练
+- 召回模型
+
+```python
+from rs4industry.data.dataset import get_datasets
+from rs4industry.model.retriever import MLPRetriever
+from rs4industry.trainer import Trainer
+
+data_config_path = "./examples/data/recflow_retriever.json"
+train_config_path = ".examples/config/mlp_retriever/train.json"
+model_config_path = ".examples/config/mlp_retriever/model.json"
+
+model = MLPRanker(data_config, model_config_path)
+trainer.fit(train_data, eval_data)
+```
+
+
+- 排序模型
+
+```python
+from rs4industry.data.dataset import get_datasets
+from rs4industry.model.rankers import MLPRanker
+from rs4industry.trainer import Trainer
+
+data_config_path = "./examples/data/recflow_ranker.json"
+train_config_path = ".examples/config/mlp_ranker/train.json"
+model_config_path = ".examples/config/mlp_ranker/model.json"
+
+model = MLPRanker(data_config, model_config_path)
+trainer.fit(train_data, eval_data)
+```
+
+
+
 ## 开发目标
 ### 训练
 #### 优先级-1：数据读取(刘奇，黄旭)

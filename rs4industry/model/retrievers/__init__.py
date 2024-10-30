@@ -1,0 +1,1 @@
+from rs4industry.model.retrievers.mlp import MLPRetriever

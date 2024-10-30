@@ -1,0 +1,1 @@
+from rs4industry.trainer.base import Trainer

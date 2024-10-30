@@ -1,0 +1,1 @@
+from rs4industry.model.rankers.mlp import MLPRanker

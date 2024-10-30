@@ -1,0 +1,8 @@
+{
+    "embedding_dim": 2,
+    "num_neg": 10,
+    "mlp_layers": [32, 32],
+    "activation": "relu",
+    "dropout": 0.3,
+    "batch_norm": true
+}

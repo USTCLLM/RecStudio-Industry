@@ -1,0 +1,6 @@
+{
+    "epochs": 3,
+    "device": "cuda:7",
+    "checkpoint_dir": "/data1/home/recstudio/huangxu/saves/mlp_test",
+    "checkpoint_steps": 150
+}
