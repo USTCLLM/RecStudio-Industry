@@ -36,6 +36,7 @@ class EarlyStopCallback(Callback):
         self.maximum = maximum
         self.logger = logger
         self.best_ckpt = {}
+        self.best_item_vectors = {}
         self.save = save
         if save:
             assert model is not None, "Model must be provided if save is True."
@@ -51,8 +52,7 @@ class EarlyStopCallback(Callback):
         state_d = {
             "best_epoch": self._last_epoch,
             "best_global_step": self._last_step,
-            "best_metric": {self.monitor_metric: self.best_metric},
-            "best_ckpt": self.best_ckpt
+            "best_metric": {self.monitor_metric: self.best_val_metric},
         }
         return state_d
 
@@ -74,6 +74,10 @@ class EarlyStopCallback(Callback):
                 self.waiting = 0
                 self._last_epoch = epoch
                 self._last_step = global_step
+                self.best_ckpt = self.model.state_dict()
+                if self.model.model_type == "retriever":
+                    self.best_item_vectors = {'item_vectors': self.item_vectors, 'item_ids': self.item_ids}
+                self.save()
         else:
             if val_metric > self.best_val_metric:
                 self.waiting += (epoch - self._last_epoch) if self.strategy == "epoch" else (global_step-self._last_step)
@@ -82,6 +86,10 @@ class EarlyStopCallback(Callback):
                 self.waiting = 0
                 self._last_epoch = epoch
                 self._last_step = global_step
+                self.best_ckpt = self.model.state_dict()
+                if self.model.model_type == "retriever":
+                    self.best_item_vectors = {'item_vectors': self.item_vectors, 'item_ids': self.item_ids}
+                self.save()
 
         if self.waiting >= self.patience:
             if self.logger is not None:
@@ -93,7 +101,7 @@ class EarlyStopCallback(Callback):
             return False
 
 
-    def on_train_end(self, *args, **kwargs):
+    def save(self, *args, **kwargs):
         """ Save the best model. """
         if self.save:
             checkpoint_dir = self.checkpoint_dir
@@ -101,9 +109,16 @@ class EarlyStopCallback(Callback):
             if not os.path.exists(best_ckpt_dir):
                 os.makedirs(best_ckpt_dir)
             state = self.state
-            with open(os.path.join(best_ckpt_dir, "best_ckpt_config.json"), "w") as f:
+
+            with open(os.path.join(best_ckpt_dir, "state.json"), "w") as f:
                 json.dump(state, f)
-            self.model.save(best_ckpt_dir)
+            
+            torch.save(self.best_ckpt, os.path.join(best_ckpt_dir, "model.pt"))
+            with open(os.path.join(best_ckpt_dir, "model_config.json"), "w") as f:
+                json.dump(self.model.config, f)
+            if self.model.model_type == "retriever":
+                torch.save(self.best_item_vectors, os.path.join(best_ckpt_dir, "item_vectors.pt"))
+            
             print(f"Best model saved in {best_ckpt_dir}.")
 
 
