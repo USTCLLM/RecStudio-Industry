@@ -27,7 +27,7 @@ class CheckpointCallback(Callback):
                 self.last_checkpoint_step = step
 
     def on_epoch_end(self, epoch, step, item_loader=None, *args, **kwargs):
-        checkpoint_dir = os.path.join(self.checkpoint_dir, f"checkpoint-epoch-{epoch}")
+        checkpoint_dir = os.path.join(self.checkpoint_dir, f"checkpoint-{step}-epoch-{epoch}")
         if not os.path.exists(checkpoint_dir):
             os.makedirs(checkpoint_dir)
         self.model.save(checkpoint_dir, item_loader=item_loader)

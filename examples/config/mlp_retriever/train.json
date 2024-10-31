@@ -1,0 +1,11 @@
+{
+    "epochs": 3,
+    "device": "cuda:8",
+    "train_batch_size": 1024,
+    "eval_batch_size": 100,
+    "item_batch_size": 4096,
+    "evaluation_strategy": "epoch",
+    "eval_interval": 1,
+    "checkpoint_dir": "/data1/home/recstudio/huangxu/saves/mlp_retriever_test",
+    "checkpoint_steps": 150
+}

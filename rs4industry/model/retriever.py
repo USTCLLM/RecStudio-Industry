@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 import os
 from typing import Dict, Union, Tuple
+from tqdm import tqdm
 
 import torch
 from rs4industry.model.base import BaseModel
@@ -136,21 +137,23 @@ class BaseRetriever(BaseModel):
         
     @torch.no_grad()
     def eval_step(self, batch, k, user_hist=None, chunk_size=2048, *args, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
-        query_vec = self.query_encoder(batch)
-        pos_vec = self.item_encoder(batch)
-        pos_scores = self.score_function(query_vec, pos_vec)
-        scores = self.score_all_items(query_vec, chunk_size=chunk_size)
-        more = user_hist.size(1) if user_hist is not None else 0
-        score, topk_idx = torch.topk(scores, k + more, dim=-1)
-        # we usually do not mask history in industrial settings
-        if pos_scores.dim() < score.dim():
-            pos_scores = pos_scores.unsqueeze(-1)
-        all_scores = torch.cat([pos_scores, score], dim=-1) # [B, N + 1]
-        # sort and get the index of the first item
-        _, indice = torch.sort(all_scores, dim=-1, descending=True, stable=True)
-        pred = indice[:, :k] == 0
-        target = torch.ones_like(batch[self.fiid], dtype=torch.bool).view(-1, 1)   # [B, 1]
-        return pred, target
+        with torch.no_grad():
+            query_vec = self.query_encoder(batch)
+            pos_vec = self.item_encoder(batch)
+            pos_scores = self.score_function(query_vec, pos_vec)
+            # TODO: use faiss to reduce memory usage
+            scores = self.score_all_items(query_vec, chunk_size=chunk_size)
+            more = user_hist.size(1) if user_hist is not None else 0
+            score, topk_idx = torch.topk(scores, k + more, dim=-1)
+            # we usually do not mask history in industrial settings
+            if pos_scores.dim() < score.dim():
+                pos_scores = pos_scores.unsqueeze(-1)
+            all_scores = torch.cat([pos_scores, score], dim=-1) # [B, N + 1]
+            # sort and get the index of the first item
+            _, indice = torch.sort(all_scores, dim=-1, descending=True, stable=True)
+            pred = indice[:, :k] == 0
+            target = torch.ones_like(batch[self.fiid], dtype=torch.bool).view(-1, 1)   # [B, 1]
+            return pred, target
 
 
     @torch.no_grad()
@@ -196,15 +199,21 @@ class BaseRetriever(BaseModel):
         item_feat = item_dataset.get_item_feat(item_id)
         return item_feat
 
-    def get_item_vectors(self, item_loader) -> Tuple[torch.Tensor, torch.Tensor]:
+    def get_item_vectors(self, item_loader, show_tqdm=True) -> Tuple[torch.Tensor, torch.Tensor]:
         all_item_vec = []
         all_item_id = []
         device = next(self.parameters()).device
+        if show_tqdm:
+            tbar = tqdm(total=len(item_loader), desc="Getting item vectors", ncols=80)
+        else:
+            tbar = None
         for item_batch in item_loader:
             item_batch = {k: v.to(device) for k, v in item_batch.items()}
             item_vec = self.item_encoder(item_batch)
             all_item_vec.append(item_vec)
             all_item_id.append(item_batch[self.fiid].cpu())
+            if tbar is not None:
+                tbar.update(1)
         all_item_vec = torch.cat(all_item_vec, dim=0)   # [N, D]
         all_item_id = torch.cat(all_item_id, dim=0) # [N]
         return all_item_vec, all_item_id
@@ -226,25 +235,28 @@ class BaseRetriever(BaseModel):
             print("Done")
 
 
-    def score_all_items(self, query_vec: torch.Tensor, chunk_size=2048):
+    def score_all_items(self, query_vec: torch.Tensor, chunk_size=1024):
         """ Score all items once, if OOM, then split the item vectors into chunks
         Args:
             query_vec (torch.Tensor): [B, D]
-            chunk_size (int): chunk size of item vectors. default is 2048.
+            chunk_size (int): chunk size of item vectors. default is 1024.
         
         Returns:
             scores (torch.Tensor): [B, N]
         """
-        try:
-            # try to score all items once, if OOM, then split the item vectors into chunks
-            scores = self.score_function(query_vec, self.item_vectors)
-        except torch.cuda.OutOfMemoryError:
-            item_vectors = self.item_vectors
-            scores = []
-            for i in range(0, len(item_vectors), chunk_size):
-                chunk = item_vectors[i:i+chunk_size]
-                scores.append(self.score_function(query_vec, chunk))
-            scores = torch.cat(scores, dim=0)
+        # try:
+        #     # try to score all items once, if OOM, then split the item vectors into chunks
+        #     scores = self.score_function(query_vec, self.item_vectors)
+        # except torch.cuda.OutOfMemoryError:
+        torch.cuda.empty_cache()
+        item_vectors = self.item_vectors
+        scores = []
+        if chunk_size == query_vec.size(0):
+            chunk_size += 2
+        for i in range(0, len(item_vectors), chunk_size):
+            chunk = item_vectors[i:i+chunk_size, :]
+            scores.append(self.score_function(query_vec, chunk))
+        scores = torch.cat(scores, dim=1)
         return scores
 
 

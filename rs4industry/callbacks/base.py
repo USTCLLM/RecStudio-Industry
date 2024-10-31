@@ -14,5 +14,5 @@ class Callback(object):
     def on_eval_end(self, epoch, step, logs={}, *args, **kwargs):
         pass
 
-    def on_train_end(self, epoch, step, logs={}, *args, **kwargs):
+    def on_train_end(self, *args, **kwargs):
         pass

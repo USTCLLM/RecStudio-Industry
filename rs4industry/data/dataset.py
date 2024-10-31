@@ -310,6 +310,7 @@ class DailyDataIterator(object):
 
     def __next__(self):
         if self.cur_idx < len(self.filenames):
+            print(f"Load dataset file {self.filenames[self.cur_idx]}")
             cache_filename = self._data_cache.get('filename', None)
             if cache_filename is not None and self.filenames[self.cur_idx] == cache_filename:
                 data, seq_data = self._data_cache['data'], self._data_cache['seq']

@@ -35,8 +35,6 @@ class EarlyStopCallback(Callback):
         self.waiting = 0
         self.maximum = maximum
         self.logger = logger
-        self.best_ckpt = {}
-        self.best_item_vectors = {}
         self.save = save
         if save:
             assert model is not None, "Model must be provided if save is True."
@@ -74,10 +72,7 @@ class EarlyStopCallback(Callback):
                 self.waiting = 0
                 self._last_epoch = epoch
                 self._last_step = global_step
-                self.best_ckpt = self.model.state_dict()
-                if self.model.model_type == "retriever":
-                    self.best_item_vectors = {'item_vectors': self.item_vectors, 'item_ids': self.item_ids}
-                self.save()
+                self.save_best_ckpt()
         else:
             if val_metric > self.best_val_metric:
                 self.waiting += (epoch - self._last_epoch) if self.strategy == "epoch" else (global_step-self._last_step)
@@ -86,10 +81,7 @@ class EarlyStopCallback(Callback):
                 self.waiting = 0
                 self._last_epoch = epoch
                 self._last_step = global_step
-                self.best_ckpt = self.model.state_dict()
-                if self.model.model_type == "retriever":
-                    self.best_item_vectors = {'item_vectors': self.item_vectors, 'item_ids': self.item_ids}
-                self.save()
+                self.save_best_ckpt()
 
         if self.waiting >= self.patience:
             if self.logger is not None:
@@ -101,7 +93,7 @@ class EarlyStopCallback(Callback):
             return False
 
 
-    def save(self, *args, **kwargs):
+    def save_best_ckpt(self, *args, **kwargs):
         """ Save the best model. """
         if self.save:
             checkpoint_dir = self.checkpoint_dir
@@ -113,11 +105,7 @@ class EarlyStopCallback(Callback):
             with open(os.path.join(best_ckpt_dir, "state.json"), "w") as f:
                 json.dump(state, f)
             
-            torch.save(self.best_ckpt, os.path.join(best_ckpt_dir, "model.pt"))
-            with open(os.path.join(best_ckpt_dir, "model_config.json"), "w") as f:
-                json.dump(self.model.config, f)
-            if self.model.model_type == "retriever":
-                torch.save(self.best_item_vectors, os.path.join(best_ckpt_dir, "item_vectors.pt"))
+            self.model.save(best_ckpt_dir)
             
             print(f"Best model saved in {best_ckpt_dir}.")
 

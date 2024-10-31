@@ -8,16 +8,16 @@ class TrainingArguments:
     optimizer: str = "adam"
     gradient_accumulation_steps: int = 1
     lr_scheduler: str = None
-    train_batch_size: int = 128
+    train_batch_size: int = 512
     item_batch_size: int = 2048 # only used for retriever training
     learning_rate: float = 0.001
     weight_decay: float = 0.0000
     gradient_accumulation_steps: int = 1
     logging_dir: str = None
     logging_steps: int = 100
-    evaluation_strategy: str = "step"  # epoch or step
-    eval_interval: int = 5000    # interval between evaluations, epochs or steps
-    eval_batch_size: int = 128
+    evaluation_strategy: str = "epoch"  # epoch or step
+    eval_interval: int = 1    # interval between evaluations, epochs or steps
+    eval_batch_size: int = 256
     cutoffs: list = field(default_factory=lambda : [1, 5, 10])
     metrics: list = field(default_factory=lambda : ["ndcg", "recall"])
     earlystop_strategy: str = "epoch"   # epoch or step

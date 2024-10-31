@@ -1,8 +1,9 @@
 {
-    "epochs": 2,
+    "epochs": 1,
     "train_batch_size": 2048,
+    "eval_batch_size": 2048,
     "device": "cuda:7",
-    "checkpoint_dir": "/data1/home/recstudio/huangxu/saves/mlp_ranker_test",
+    "checkpoint_dir": "/data1/home/recstudio/huangxu/saves/mlp_ranker_test2",
     "checkpoint_steps": 1000,
     "eval_interval": 1000,
     "metrics": ["auc", "logloss"],

@@ -15,10 +15,10 @@ from rs4industry.callbacks import Callback, EarlyStopCallback, CheckpointCallbac
 
 
 class Trainer(object):
-    def __init__(self, model, config, *args, **kwargs):
+    def __init__(self, model, config=None, train=True, *args, **kwargs):
         super(Trainer, self).__init__(*args, **kwargs)
         self.config: TrainingArguments = self.load_config(config)
-        self._check_checkpoint_dir()
+        self.train_mode = train
         self.model: BaseModel = model.to(self.config.device)
         self.optimizer = self.get_optimizer(
             self.config.optimizer,
@@ -31,11 +31,14 @@ class Trainer(object):
         self.global_step = 0    # global step counter, load from checkpoint if exists
         self.cur_global_step = 0    # current global step counter, record the steps of this training
         self._last_eval_epoch = -1
-        self.callbacks: List[Callback] = self.get_callbacks()
+        if self.train_mode:
+            self.callbacks: List[Callback] = self.get_callbacks()
         self._total_train_samples = 0
         self._total_eval_samples = 0
 
     def load_config(self, config: Union[Dict, str]) -> TrainingArguments:
+        if config is None:
+            return TrainingArguments()
         if isinstance(config, TrainingArguments):
             return config
         if isinstance(config, dict):
@@ -109,6 +112,7 @@ class Trainer(object):
         return loader
 
     def fit(self, train_dataset, eval_dataset=None, *args, **kwargs):
+        self._check_checkpoint_dir()
         train_loader = self.get_train_loader(train_dataset)
         item_loader = self.get_item_loader(train_dataset.item_feat_dataset) if train_dataset.item_feat_dataset is not None else None
         if eval_dataset is not None:
@@ -129,7 +133,15 @@ class Trainer(object):
 
                 for step, batch in enumerate(train_loader):
                     if (eval_loader is not None) and self._check_if_eval(epoch, step):
-                        stop_training = self.evaluation_loop(eval_loader, item_loader, epoch)
+                        metrics = self.evaluation_loop(eval_loader, item_loader)
+                        self.logger.info("Validation at Epoch {} Step {}:".format(epoch, self.global_step))
+                        self.log_dict(metrics)
+
+                        for callback in self.callbacks:
+                            if isinstance(callback, EarlyStopCallback):
+                                stop_training = callback.on_eval_end(epoch, self.global_step, metrics, *args, **kwargs)
+                            else:
+                                callback.on_eval_end(epoch, self.global_step, *args, **kwargs)
 
                     batch = batch_to_device(batch, self.config.device) # move batch to GPU if available
                     batch_size = batch[list(batch.keys())[0]].shape[0]
@@ -176,6 +188,12 @@ class Trainer(object):
                     #     stop_training = True
                     #     break
 
+                # print loss info at the end of each epoch
+                mean_total_loss = epoch_total_loss / epoch_total_bs
+                self.logger.info(f"Epoch {epoch}/{self.config.epochs} Step {self.global_step}: Loss {loss:.5f}, Mean Loss {mean_total_loss:.5f}")
+                if len(loss_dict) > 1:
+                    self.logger.info(f"\tloss info: ", ', '.join([f'{k}={v:.5f}' for k, v in loss_dict.items()]))
+                
                 for callback in self.callbacks:
                         callback.on_epoch_end(epoch, self.global_step, *args, **kwargs)
 
@@ -183,10 +201,11 @@ class Trainer(object):
                     break
 
                 self._total_train_samples = epoch_total_bs
-                self.logger.info(f"[Finished] Stop training at {self.global_step} steps")
         
         except KeyboardInterrupt:
             self.logger.info(f"[KeyboardInterrupt] Stop training at {self.global_step} steps")
+
+        self.logger.info(f"[Finished] Stop training at {self.global_step} steps")
 
         for callback in self.callbacks:
             callback.on_train_end(checkpoint_dir=self.config.checkpoint_dir, *args, **kwargs)
@@ -197,14 +216,32 @@ class Trainer(object):
 
         if eval_loader is not None:
             self.logger.info("Start final evaluation...")
-            self.evaluation_loop(eval_loader, item_loader, epoch)
+            metrics = self.evaluation_loop(eval_loader, item_loader)
+            self.logger.info("Evaluation result:")
+            self.log_dict(metrics)
+            for callback in self.callbacks:
+                if isinstance(callback, EarlyStopCallback):
+                    stop_training = callback.on_eval_end(epoch, self.global_step, metrics, *args, **kwargs)
+                else:
+                    callback.on_eval_end(epoch, self.global_step, *args, **kwargs)
         
         self.save_state(self.config.checkpoint_dir)
 
 
-    def evaluation_loop(self, eval_loader, item_loader, epoch, *args, **kwargs):
-        stop_training = False
+    @torch.no_grad()
+    def evaluation(self, eval_dataset, *args, **kwargs):
         self.logger.info("Start evaluation...")
+        self.model.eval()
+        item_loader = self.get_item_loader(eval_dataset.item_feat_dataset) if eval_dataset.item_feat_dataset is not None else None
+        eval_loader = self.get_eval_loader(eval_dataset)
+        eval_loader = self.get_eval_loader(eval_dataset)
+        metrics = self.evaluation_loop(eval_loader, item_loader)
+        self.logger.info("Evaluation result:")
+        self.log_dict(metrics)
+
+
+    @torch.no_grad()
+    def evaluation_loop(self, eval_loader, item_loader, *args, **kwargs) -> Dict:
         self.model.eval()
         if self.model.model_type == "retriever":
             self.model.update_item_vectors(item_loader)
@@ -218,16 +255,8 @@ class Trainer(object):
             eval_total_bs += eval_batch_size
         metrics = self.eval_epoch_end(eval_outputs)
         self._total_eval_samples = eval_total_bs
-        self.logger.info("Validation at Epoch {} Step {}:".format(epoch, self.global_step))
-        self.log_dict(metrics)
 
-        for callback in self.callbacks:
-            if isinstance(callback, EarlyStopCallback):
-                stop_training = callback.on_eval_end(epoch, self.global_step, metrics, *args, **kwargs)
-            else:
-                callback.on_eval_end(epoch, self.global_step, *args, **kwargs)
-
-        return stop_training
+        return metrics
 
     def _check_if_eval(self, epoch, step):
         if self.config.evaluation_strategy == 'epoch':
@@ -285,7 +314,7 @@ class Trainer(object):
                     out[k].append(v)
             for k, v in out.items():
                 metric = torch.tensor(v)
-                out[k] = (metric * bs).sum() / bs.sum()
+                out[k] = ((metric * bs).sum() / bs.sum()).item()
             return out
         else:
             # ranker: AUC, Logloss
@@ -297,6 +326,7 @@ class Trainer(object):
             metrics: list = get_eval_metrics(self.config.metrics, self.model.model_type)
             for metric, func in metrics:
                 out[metric] = func(pred, target)
+                out[metric] = out[metric].item() if isinstance(out[metric], torch.Tensor) else out[metric]
             return out
             
 
@@ -392,6 +422,8 @@ class Trainer(object):
 
 
     def _check_checkpoint_dir(self):
+        if not self.train_mode:
+            return
         checkpoint_dir = self.config.checkpoint_dir
         if checkpoint_dir is None:
             raise ValueError("Checkpoint directory must be specified.")
@@ -408,3 +440,17 @@ class Trainer(object):
         if (clip_norm is not None) and (clip_norm > 0):
             torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_norm)
 
+
+    def parameter_init(self, method, **kwargs):
+        if method == "xavier_uniform":
+            torch.init.xavier_uniform_(self.model.parameters(), **kwargs)
+        elif method == "xavier_normal":
+            torch.init.xavier_normal_(self.model.parameters(), **kwargs)
+        elif method == "orthogonal":
+            torch.init.orthogonal_(self.model.parameters(), **kwargs)
+        elif method == "constant":
+            torch.init.constant_(self.model.parameters(), **kwargs)
+        elif method == "zeros":
+            torch.init.zeros_(self.model.parameters(), **kwargs)
+        else:
+            raise ValueError(f"Unknown initialization method: {method}")

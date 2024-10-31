@@ -3,7 +3,7 @@ import pandas as pd
 from sklearn.preprocessing import KBinsDiscretizer, StandardScaler
 
 
-def standard_time_discretizer(df, col: str):
+def timestamp_to_weekday_hour_min(df, col: str):
     """ Process the timestamp column to weekday, hour and minute
     Args:
         df (pd.DataFrame): dataframe with a timestamp column
@@ -21,7 +21,7 @@ def standard_time_discretizer(df, col: str):
     
     # apply the function to the timestamp column, get three columns
     df[col] = df[col].astype('int64')
-    df[[col + '_wday', col + '_hour', col + '_min']] = pd.DataFrame(df[col].apply(_time_handler).tolist(), columns=[col + '_wday', col + '_hour', col + '_min'])
+    df[[col + '_wday', col + '_hour', col + '_min']] = df[col].apply(lambda x: pd.Series(_time_handler(x)))
     # delete the original timestamp column
     df = df.drop(columns=[col])
     return df
