@@ -1,0 +1,10 @@
+fsspec==2024.9.0
+loguru==0.7.2
+numpy==1.26.4
+pandas==2.2.3
+PyYAML==6.0.2
+scikit_learn==1.5.2
+torchmetrics==1.5.1
+tqdm==4.66.6
+--find-links https://download.pytorch.org/whl/cu118
+torch==2.5.0
