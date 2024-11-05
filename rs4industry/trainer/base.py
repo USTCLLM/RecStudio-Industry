@@ -5,10 +5,9 @@ from typing import Dict, List, Optional, Tuple, Union
 import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
+from accelerate import Accelerator
 
-from rs4industry.model.base import BaseModel
-from rs4industry.model.retriever import BaseRetriever
-from rs4industry.utils import get_logger, batch_to_device
+from rs4industry.utils import get_logger
 from rs4industry.eval import get_eval_metrics
 from rs4industry.config import TrainingArguments
 from rs4industry.callbacks import Callback, EarlyStopCallback, CheckpointCallback
@@ -19,13 +18,21 @@ class Trainer(object):
         super(Trainer, self).__init__(*args, **kwargs)
         self.config: TrainingArguments = self.load_config(config)
         self.train_mode = train
-        self.model: BaseModel = model.to(self.config.device)
-        self.optimizer = self.get_optimizer(
+        self.model_type = model.model_type
+        self._check_checkpoint_dir()
+
+        self.accelerator = Accelerator()
+        if self.accelerator.is_main_process:
+            print(model)
+        model.to(self.accelerator.device)
+        optimizer = self.get_optimizer(
             self.config.optimizer,
-            self.model.parameters(),
+            model.parameters(),
             lr=self.config.learning_rate,
             weight_decay=self.config.weight_decay    
         )
+        self.model = self.accelerator.prepare(model)
+        self.optimizer = self.accelerator.prepare(optimizer)
         self.lr_scheduler = self.get_lr_scheduler()
         self.logger = get_logger(self.config)
         self.global_step = 0    # global step counter, load from checkpoint if exists
@@ -35,6 +42,8 @@ class Trainer(object):
             self.callbacks: List[Callback] = self.get_callbacks()
         self._total_train_samples = 0
         self._total_eval_samples = 0
+        self.item_vectors = None
+        self.item_ids = None
 
     def load_config(self, config: Union[Dict, str]) -> TrainingArguments:
         if config is None:
@@ -59,14 +68,14 @@ class Trainer(object):
                 patience=self.config.earlystop_patience,
                 maximum="max" in self.config.earlystop_metric_mode,
                 save=self.config.checkpoint_best_ckpt,
-                model=self.model,
-                checkpoint_dir=self.config.checkpoint_dir
+                checkpoint_dir=self.config.checkpoint_dir,
+                is_main_process=self.accelerator.is_main_process
             ))
         if self.config.checkpoint_steps is not None:
             callbacks.append(CheckpointCallback(
-                model=self.model,
                 step_interval=self.config.checkpoint_steps,
-                checkpoint_dir=self.config.checkpoint_dir
+                checkpoint_dir=self.config.checkpoint_dir,
+                is_main_process=self.accelerator.is_main_process
             ))
         return callbacks
         
@@ -112,44 +121,56 @@ class Trainer(object):
         return loader
 
     def fit(self, train_dataset, eval_dataset=None, *args, **kwargs):
-        self._check_checkpoint_dir()
         train_loader = self.get_train_loader(train_dataset)
-        item_loader = self.get_item_loader(train_dataset.item_feat_dataset) if train_dataset.item_feat_dataset is not None else None
+        train_loader = self.accelerator.prepare(train_loader)
+
+        if train_dataset.item_feat_dataset is not None:
+            item_loader = self.accelerator.prepare(self.get_item_loader(train_dataset.item_feat_dataset))
+        else:
+            item_loader = None
+        
         if eval_dataset is not None:
             eval_loader = self.get_eval_loader(eval_dataset)
+            eval_loader = self.accelerator.prepare(eval_loader)
         else:
             eval_loader = None
 
         for callback in self.callbacks:
-            callback.on_train_begin(train_dataset, eval_dataset, *args, **kwargs)
+            callback_output = callback.on_train_begin(train_dataset, eval_dataset, *args, **kwargs)
+            if callback_output.save_checkpoint is not None:
+                self.save_state(callback_output.save_checkpoint)
         
         stop_training = False
         try:
             for epoch in range(self.config.epochs):
                 epoch_total_loss = 0.0
                 epoch_total_bs = 0
-                self.logger.info(f"Start training epoch {epoch}")
                 self.model.train()
 
+                self.log_info(f"Start training epoch {epoch}")
                 for step, batch in enumerate(train_loader):
-                    if (eval_loader is not None) and self._check_if_eval(epoch, step):
+    
+                    # check if need to do evaluation
+                    if (eval_loader is not None) and self._check_if_eval(epoch, self.global_step):
                         metrics = self.evaluation_loop(eval_loader, item_loader)
-                        self.logger.info("Validation at Epoch {} Step {}:".format(epoch, self.global_step))
+                        self.log_info("Evaluation at Epoch {} Step {}:".format(epoch, self.global_step))
                         self.log_dict(metrics)
 
                         for callback in self.callbacks:
-                            if isinstance(callback, EarlyStopCallback):
-                                stop_training = callback.on_eval_end(epoch, self.global_step, metrics, *args, **kwargs)
-                            else:
-                                callback.on_eval_end(epoch, self.global_step, *args, **kwargs)
+                            callback_output = callback.on_eval_end(epoch, self.global_step, metrics, *args, **kwargs)
+                            if callback_output.save_checkpoint is not None:
+                                self.save_state(callback_output.save_checkpoint)
+                            if callback_output.stop_training and (not stop_training):
+                                stop_training = True
 
-                    batch = batch_to_device(batch, self.config.device) # move batch to GPU if available
+                    # train one batch
                     batch_size = batch[list(batch.keys())[0]].shape[0]
                     loss_dict = self._train_batch(batch, item_loader=item_loader, *args, **kwargs)
                     loss = loss_dict['loss']
 
-                    loss.backward()
-                    # gradient accumulation
+                    self.accelerator.backward(loss)
+
+                    # gradient accumulation and gradient clipping by norm
                     if self.config.gradient_accumulation_steps is None or self.config.gradient_accumulation_steps == 1:
                         self.gradient_clipping(self.config.max_grad_norm)
                         self.optimizer.step()
@@ -162,40 +183,42 @@ class Trainer(object):
 
                     epoch_total_loss += loss.item() * batch_size
                     epoch_total_bs += batch_size
-                    if self.global_step % self.config.logging_steps == 0:
+                    if (self.global_step % self.config.logging_steps == 0):
                         mean_total_loss = epoch_total_loss / epoch_total_bs
-                        self.logger.info(f"Epoch {epoch}/{self.config.epochs} Step {self.global_step}: Loss {loss:.5f}, Mean Loss {mean_total_loss:.5f}")
-                        if len(loss_dict) > 1:
-                            self.logger.info(f"\tloss info: ", ', '.join([f'{k}={v:.5f}' for k, v in loss_dict.items()]))
-
+                        self.log_info(f"Epoch {epoch}/{self.config.epochs-1} Step {self.global_step}: Loss {loss:.5f}, Mean Loss {mean_total_loss:.5f}")
+                        if (len(loss_dict) > 1):
+                            self.log_info(f"\tloss info: ", ', '.join([f'{k}={v:.5f}' for k, v in loss_dict.items()]))
 
                     for callback in self.callbacks:
-                        callback.on_batch_end(
+                        callback_output = callback.on_batch_end(
                             epoch = epoch,
                             step = self.global_step,
-                            logs = loss_dict,
-                            item_loader = item_loader   # for retriever model to update item vectors when saving
+                            logs = loss_dict
                         )
+                        if callback_output.save_checkpoint is not None:
+                            self.save_state(callback_output.save_checkpoint)
+                        if callback_output.stop_training and (not stop_training):
+                            stop_training = True
                 
                     self.global_step += 1
                     self.cur_global_step += 1
 
                     if stop_training:
-                        self.logger.info("[Earlystop] Stop training at epoch {}, {} global steps:".format(epoch, self.config.epochs, self.global_step))
+                        self.log_info("[Earlystop] Stop training at epoch {}, {} global steps:".format(epoch, self.global_step))
                         break
-                    # except KeyboardInterrupt:
-                    #     self.logger.info(f"[KeyboardInterrupt] Stop training at {self.global_step} steps")
-                    #     stop_training = True
-                    #     break
 
                 # print loss info at the end of each epoch
                 mean_total_loss = epoch_total_loss / epoch_total_bs
-                self.logger.info(f"Epoch {epoch}/{self.config.epochs} Step {self.global_step}: Loss {loss:.5f}, Mean Loss {mean_total_loss:.5f}")
+                self.log_info(f"Epoch {epoch}/{self.config.epochs} Step {self.global_step}: Loss {loss:.5f}, Mean Loss {mean_total_loss:.5f}")
                 if len(loss_dict) > 1:
-                    self.logger.info(f"\tloss info: ", ', '.join([f'{k}={v:.5f}' for k, v in loss_dict.items()]))
+                    self.log_info(f"\tloss info: ", ', '.join([f'{k}={v:.5f}' for k, v in loss_dict.items()]))
                 
                 for callback in self.callbacks:
-                        callback.on_epoch_end(epoch, self.global_step, *args, **kwargs)
+                    callback_output = callback.on_epoch_end(epoch, self.global_step, *args, **kwargs)
+                    if callback_output.save_checkpoint is not None:
+                        self.save_state(callback_output.save_checkpoint)
+                    if callback_output.stop_training and (not stop_training):
+                        stop_training = True
 
                 if stop_training:
                     break
@@ -203,21 +226,19 @@ class Trainer(object):
                 self._total_train_samples = epoch_total_bs
         
         except KeyboardInterrupt:
-            self.logger.info(f"[KeyboardInterrupt] Stop training at {self.global_step} steps")
+            self.log_info(f"[KeyboardInterrupt] Stop training at {self.global_step} steps")
 
-        self.logger.info(f"[Finished] Stop training at {self.global_step} steps")
+        self.log_info(f"[Finished] Stop training at {self.global_step} steps")
 
         for callback in self.callbacks:
-            callback.on_train_end(checkpoint_dir=self.config.checkpoint_dir, *args, **kwargs)
-
-        if self.model.model_type == "retriever":
-            # update all item vectors
-            self.model.update_item_vectors(item_loader)
+            callback_output = callback.on_train_end(checkpoint_dir=self.config.checkpoint_dir, *args, **kwargs)
+            if callback_output.save_checkpoint is not None:
+                self.save_state(callback_output.save_checkpoint)
 
         if eval_loader is not None:
-            self.logger.info("Start final evaluation...")
+            self.log_info("Start final evaluation...")
             metrics = self.evaluation_loop(eval_loader, item_loader)
-            self.logger.info("Evaluation result:")
+            self.log_info("Evaluation result:")
             self.log_dict(metrics)
             for callback in self.callbacks:
                 if isinstance(callback, EarlyStopCallback):
@@ -230,33 +251,49 @@ class Trainer(object):
 
     @torch.no_grad()
     def evaluation(self, eval_dataset, *args, **kwargs):
-        self.logger.info("Start evaluation...")
+        self.log_info("Start evaluation...")
         self.model.eval()
         item_loader = self.get_item_loader(eval_dataset.item_feat_dataset) if eval_dataset.item_feat_dataset is not None else None
         eval_loader = self.get_eval_loader(eval_dataset)
         eval_loader = self.get_eval_loader(eval_dataset)
         metrics = self.evaluation_loop(eval_loader, item_loader)
-        self.logger.info("Evaluation result:")
+        self.log_info("Evaluation result:")
         self.log_dict(metrics)
 
 
     @torch.no_grad()
     def evaluation_loop(self, eval_loader, item_loader, *args, **kwargs) -> Dict:
         self.model.eval()
-        if self.model.model_type == "retriever":
-            self.model.update_item_vectors(item_loader)
+        if self.model_type == "retriever":
+            self.item_vectors, self.item_ids = self.update_item_vectors(item_loader)
         eval_outputs = []
         eval_total_bs = 0
         for eval_step, eval_batch in enumerate(eval_loader):
-            eval_batch = batch_to_device(eval_batch, self.config.device) # move batch to GPU if available, otherwise do nothing
             eval_batch_size = eval_batch[list(eval_batch.keys())[0]].shape[0]
-            metrics = self._eval_batch(eval_batch, *args, **kwargs)
+            metrics = self._eval_batch(eval_batch, item_vectors=self.item_vectors, *args, **kwargs)
             eval_outputs.append((metrics, eval_batch_size))
             eval_total_bs += eval_batch_size
         metrics = self.eval_epoch_end(eval_outputs)
         self._total_eval_samples = eval_total_bs
 
         return metrics
+
+    
+    @torch.no_grad()
+    def update_item_vectors(self, item_loader):
+        self.model.eval()
+        all_item_vectors, all_item_ids = [], []
+        model = self.accelerator.unwrap_model(self.model)
+        for item_batch in item_loader:
+            item_vector = model.item_encoder(item_batch)
+            all_item_vectors.append(item_vector)
+            all_item_ids.append(item_batch[model.fiid])
+        all_item_vectors = self.accelerator.gather_for_metrics(all_item_vectors)
+        all_item_ids = self.accelerator.gather_for_metrics(all_item_ids)
+        all_item_vectors = torch.cat(all_item_vectors, dim=0)
+        all_item_ids = torch.cat(all_item_ids, dim=0).cpu()
+        return all_item_vectors, all_item_ids
+
 
     def _check_if_eval(self, epoch, step):
         if self.config.evaluation_strategy == 'epoch':
@@ -265,7 +302,7 @@ class Trainer(object):
                 return True
             return False
         elif self.config.evaluation_strategy == 'step':
-            if self.global_step % self.config.eval_interval == 0:
+            if step % self.config.eval_interval == 0:
                 return True
             return False
         else:
@@ -273,7 +310,7 @@ class Trainer(object):
     
 
     def _train_batch(self, batch, *args, **kwargs):
-        loss_dict = self.model.cal_loss(batch=batch, *args, **kwargs)
+        loss_dict = self.model(batch=batch, cal_loss=True, *args, **kwargs)
         return loss_dict
 
 
@@ -289,7 +326,9 @@ class Trainer(object):
         with torch.no_grad():
             self.model.eval()
             k = max(self.config.cutoffs) if self.config.cutoffs is not None else None
-            outputs = self.model.eval_step(batch, k=k, *args, **kwargs)
+            model = self.accelerator.unwrap_model(self.model)
+            outputs = model.eval_step(batch, k=k, *args, **kwargs)
+            outputs = self.accelerator.gather_for_metrics(outputs)
             metrics: dict = self.compute_metrics(outputs)
             return metrics
     
@@ -305,7 +344,7 @@ class Trainer(object):
         Returns:
             Dict: The aggregated metrics.
         """
-        if self.model.model_type == "retriever":
+        if self.model_type == "retriever":
             metric_list, bs = zip(*outputs)
             bs = torch.tensor(bs)
             out = defaultdict(list)
@@ -323,7 +362,7 @@ class Trainer(object):
             pred, target = zip(*output)
             pred = torch.cat(pred, dim=-1)
             target = torch.cat(target, dim=-1)
-            metrics: list = get_eval_metrics(self.config.metrics, self.model.model_type)
+            metrics: list = get_eval_metrics(self.config.metrics, self.model_type)
             for metric, func in metrics:
                 out[metric] = func(pred, target)
                 out[metric] = out[metric].item() if isinstance(out[metric], torch.Tensor) else out[metric]
@@ -340,11 +379,10 @@ class Trainer(object):
         Returns:
             Dict: The computed metrics.
         """
-        model_type = "retriever" if isinstance(self.model, BaseRetriever) else "ranker"
-        metrics: list = get_eval_metrics(self.config.metrics, model_type)
+        metrics: list = get_eval_metrics(self.config.metrics, self.model_type)
         cutoffs = self.config.cutoffs
         output_dict = {}
-        if model_type == "retriever":
+        if self.model_type == "retriever":
             for metric, func in metrics:
                 for cutoff in cutoffs:
                     output_dict[f"{metric}@{cutoff}"] = func(*output, cutoff)
@@ -356,7 +394,11 @@ class Trainer(object):
     def log_dict(self, d: Dict):
         """Log a dictionary of values."""
         output_list = [f"{k}={v}" for k, v in d.items()]
-        self.logger.info(", ".join(output_list))
+        self.log_info(", ".join(output_list))
+
+    def log_info(self, *arg, **kwargs):
+        if self.accelerator.is_main_process:
+            self.logger.info(*arg, **kwargs)
 
 
     def get_optimizer(self, name, params, lr, weight_decay):
@@ -391,26 +433,37 @@ class Trainer(object):
         return None
 
 
-    def save_state(self, checkpoint_dir):
-        """Save the state of the trainer."""
+    def save_state(self, checkpoint_dir: str):
+        """Save the state of the trainer.
+        
+        Args:
+            checkpoint_dir(str): the directory where the checkpoint should be saved.
+        """
         # save the parameters of the model
         # save model configuration, enabling loading the model later
-        self.model.save(checkpoint_dir)
+        if self.accelerator.is_main_process:
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            unwrapped_model = self.accelerator.unwrap_model(self.model)
+            unwrapped_model.save(checkpoint_dir)
 
-        # save the optimizer state and the scheduler state
-        optimizer_state = {"optimizer": self.optimizer.state_dict()}
-        if self.lr_scheduler is not None:
-            optimizer_state["scheduler"] = self.scheduler.state_dict()
-        torch.save(optimizer_state, os.path.join(checkpoint_dir, 'optimizer_state.pt'))
+            if self.model_type == "retriever":
+                item_vectors_path = os.path.join(checkpoint_dir, 'item_vectors.pt')
+                torch.save({'item_vectors': self.item_vectors, 'item_ids': self.item_ids}, item_vectors_path)
 
-        # save the trainer configurations
-        with open(os.path.join(checkpoint_dir, 'trainer_config.json'), 'w') as fp:
-            json.dump(self.config.to_dict(), fp, indent=4)
+            # save the optimizer state and the scheduler state
+            optimizer_state = {"optimizer": self.optimizer.state_dict()}
+            if self.lr_scheduler is not None:
+                optimizer_state["scheduler"] = self.scheduler.state_dict()
+            torch.save(optimizer_state, os.path.join(checkpoint_dir, 'optimizer_state.pt'))
 
-        # save the trainer state
-        with open(os.path.join(checkpoint_dir, 'trainer_state.json'), 'w') as fp:
-            json.dump(self.state, fp, indent=4)
-        self.logger.info(f"Saved the model and trainer state to {checkpoint_dir}.")
+            # save the trainer configurations
+            with open(os.path.join(checkpoint_dir, 'trainer_config.json'), 'w') as fp:
+                json.dump(self.config.to_dict(), fp, indent=4)
+
+            # save the trainer state
+            with open(os.path.join(checkpoint_dir, 'trainer_state.json'), 'w') as fp:
+                json.dump(self.state, fp, indent=4)
+            self.log_info(f"Saved the model and trainer state to {checkpoint_dir}.")
 
 
     @property
@@ -431,14 +484,13 @@ class Trainer(object):
             os.makedirs(checkpoint_dir)
         else:
             # check if the checkpoint_dir is empty
-            if len(os.listdir(checkpoint_dir)) == 0:
-                pass
-            else:
-                raise ValueError(f"Checkpoint directory '{checkpoint_dir}' is not empty.")
+            if len(os.listdir(checkpoint_dir)) > 0:
+                raise ValueError(f"Checkpoint directory `{checkpoint_dir}` is not empty.")
 
     def gradient_clipping(self, clip_norm):
         if (clip_norm is not None) and (clip_norm > 0):
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_norm)
+            # torch.nn.utils.clip_grad_norm_(self.model.parameters(), clip_norm)
+            self.accelerator.clip_grad_norm_(self.model.parameters(), clip_norm)
 
 
     def parameter_init(self, method, **kwargs):

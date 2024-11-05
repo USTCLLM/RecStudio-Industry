@@ -1,7 +1,7 @@
 import os
 import json
 import torch
-from rs4industry.callbacks.base import Callback
+from rs4industry.callbacks.base import Callback, CallbackOutput
 
 class EarlyStopCallback(Callback):
     def __init__(
@@ -11,9 +11,9 @@ class EarlyStopCallback(Callback):
             patience: int=10,
             maximum: bool=True,
             save: bool=False,
-            model = None,
             checkpoint_dir: str=None,
             logger=None,
+            is_main_process: bool=False,
             **kwargs
         ):
         """ EarlyStopping callback.
@@ -37,13 +37,12 @@ class EarlyStopCallback(Callback):
         self.logger = logger
         self.save = save
         if save:
-            assert model is not None, "Model must be provided if save is True."
+            # assert model is not None, "Model must be provided if save is True."
             assert checkpoint_dir is not None, "Checkpoint directory must be provided if save is True."
-        self.model = model
         self.checkpoint_dir = checkpoint_dir
         self._last_epoch = 0
         self._last_step = 0
-        # TODO: save best checkpoint
+        self.is_main_process = is_main_process
 
     @property
     def state(self):
@@ -54,16 +53,19 @@ class EarlyStopCallback(Callback):
         }
         return state_d
 
-    def on_eval_end(self, epoch, global_step, logs, *args, **kwargs):
+    def on_eval_end(self, epoch, global_step, logs, *args, **kwargs) -> dict:
         """ Callback method called at the end of each evaluation step.
         Args:
             epoch: Current epoch number.
             global_step: Current step number within the current epoch.
             logs: Dictionary containing the metrics logged so far.
         Returns:
-            bool: True if early stopping should occur, False otherwise.
+            dict: A dictionary containing the following keys:
+                - "save_checkpoint": The path where the best model should be saved. If None, no model is saved.
+                - "stop_training": A boolean indicating whether to stop training.
         """
         val_metric = logs[self.monitor_metric]
+        output = CallbackOutput()
         if self.maximum:
             if val_metric < self.best_val_metric:
                 self.waiting += (epoch - self._last_epoch) if self.strategy == "epoch" else (global_step-self._last_step)
@@ -72,7 +74,9 @@ class EarlyStopCallback(Callback):
                 self.waiting = 0
                 self._last_epoch = epoch
                 self._last_step = global_step
-                self.save_best_ckpt()
+                self.save_state()
+                if self.save:
+                    output.save_checkpoint = os.path.join(self.checkpoint_dir, "best_ckpt")
         else:
             if val_metric > self.best_val_metric:
                 self.waiting += (epoch - self._last_epoch) if self.strategy == "epoch" else (global_step-self._last_step)
@@ -81,21 +85,25 @@ class EarlyStopCallback(Callback):
                 self.waiting = 0
                 self._last_epoch = epoch
                 self._last_step = global_step
-                self.save_best_ckpt()
+                self.save_state()
+                if self.save:
+                    output.save_checkpoint = os.path.join(self.checkpoint_dir, "best_ckpt")
 
         if self.waiting >= self.patience:
             if self.logger is not None:
                 self.logger.info("Early stopping at epoch {}, global step {}".format(epoch, global_step))
-            return True
+            output.stop_training = True
         else:
             if self.logger is not None:
                 self.logger.info("Waiting for {} more {}s".format(self.patience - self.waiting, self.strategy))
-            return False
+            output.stop_training = False
+        
+        return output
 
 
-    def save_best_ckpt(self, *args, **kwargs):
+    def save_state(self, *args, **kwargs):
         """ Save the best model. """
-        if self.save:
+        if self.save and self.is_main_process:
             checkpoint_dir = self.checkpoint_dir
             best_ckpt_dir = os.path.join(checkpoint_dir, "best_ckpt")
             if not os.path.exists(best_ckpt_dir):
@@ -105,7 +113,7 @@ class EarlyStopCallback(Callback):
             with open(os.path.join(best_ckpt_dir, "state.json"), "w") as f:
                 json.dump(state, f)
             
-            self.model.save(best_ckpt_dir)
+            # self.model.save(best_ckpt_dir)
             
             print(f"Best model saved in {best_ckpt_dir}.")
 

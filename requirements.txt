@@ -1,4 +1,6 @@
+accelerate==1.1.0
 fsspec==2024.9.0
+pyarrow==18.0.0
 loguru==0.7.2
 numpy==1.26.4
 pandas==2.2.3

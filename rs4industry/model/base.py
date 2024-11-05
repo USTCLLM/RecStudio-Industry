@@ -60,8 +60,6 @@ class BaseModel(nn.Module):
     def save(self, checkpoint_dir: str, **kwargs):
         self.save_checkpoint(checkpoint_dir)
         self.save_configurations(checkpoint_dir)
-        if self.model_type == "retriever":
-            self.save_item_vectors(checkpoint_dir, item_loader=kwargs.get('item_loader', None))
 
 
     def score(self, batch, *args, **kwargs):
