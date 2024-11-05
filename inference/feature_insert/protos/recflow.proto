@@ -9,6 +9,7 @@ message Item {
   int64 upload_type = 4;
   int64 upload_timestamp = 5;
   int64 category_level_one = 6;
+  int64 request_timestamp = 7; 
 }
 
 message UserTimestamp {
@@ -19,5 +20,5 @@ message UserTimestamp {
   int32 age = 5;                  
   int64 gender = 6;              
   int64 province = 7;
-  repeated int64 seq_effective_50 = 8;
+  repeated Item seq_effective_50 = 8;
 }

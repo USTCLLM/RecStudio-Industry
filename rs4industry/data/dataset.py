@@ -158,6 +158,7 @@ class ConfigProcessor(object):
         for key in REQUIRED_DATA_CONFIG:
             if key not in valid_keys:
                 missing_keys.append(key)
+        # TODO: confirm this assert, it using key out of the loop
         assert key in valid_keys, f"Missing required keys: {missing_keys}"
 
     def _get_date_range(self, mode: str):

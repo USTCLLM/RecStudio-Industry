@@ -124,7 +124,11 @@ class BaseRanker(BaseModel):
             batch_size = candidates[self.fiid].size(0)
             for k, v in context_input.items():
                 # B, * -> BxN, *
-                context_input[k] = v.expand(num_candidates, *v.shape[1:])
+                if isinstance(v, dict):
+                    for k_, v_ in v.items():
+                        v[k_] = v_.repeat_interleave(num_candidates, dim=0)
+                else:
+                    context_input[k] = v.repeat_interleave(num_candidates, dim=0)
             for k, v in candidates.items():
                 # B, N, * -> BxN, *
                 candidates[k] = v.view(-1, *v.shape[2:])

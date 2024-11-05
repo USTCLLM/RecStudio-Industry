@@ -1,17 +1,22 @@
-import torch 
-import numpy as np
-import onnxruntime as ort
-import argparse 
-import yaml 
-import pandas as pd 
-import redis 
-from collections import defaultdict
-import re
-from collections.abc import Iterable 
-import numpy as np 
-import importlib 
-from tqdm import tqdm 
+import os
 import time
+import re
+import importlib 
+from collections import defaultdict
+from collections.abc import Iterable
+from abc import abstractmethod
+import argparse
+from copy import deepcopy 
+
+from tqdm import tqdm
+import torch
+import numpy as np
+import pandas as pd
+import onnxruntime as ort
+import yaml
+import json 
+import redis 
+
 
 class InferenceEngine(object):
 
@@ -19,11 +24,12 @@ class InferenceEngine(object):
         
         # load config 
         self.config = config
-        with open(config['feature_config_path'], 'r') as f:
-            self.feature_config = yaml.safe_load(f)
+        with open(os.path.join(config['model_ckpt_path'], 'model_config.json'), 'r', encoding='utf-8') as f:
+            self.model_ckpt_config = json.load(f)
+        self.feature_config = deepcopy(self.model_ckpt_config['data_attr'])
         with open(config['feature_cache_config_path'], 'r') as f:
             self.feature_cache_config = yaml.safe_load(f)
-        
+
         # load infer data 
         self.infer_df = pd.read_feather(config['inference_dataset_path'])
 
@@ -46,7 +52,12 @@ class InferenceEngine(object):
                                         db=self.feature_cache_config['db'])
         
         # load model session
-        self.ort_session = ort.InferenceSession(config['model_path'])
+        self.ort_session = self.get_ort_session()
+        print(f'Session is using : {self.ort_session.get_providers()}')
+
+    @abstractmethod
+    def get_ort_session(self, model_ckpt_path) -> ort.InferenceSession:
+        pass 
     
     def batch_inference(self):
         # iterate infer data 
@@ -60,7 +71,7 @@ class InferenceEngine(object):
             batch_candidates_df = self.get_candidates(batch_infer_df)
 
             # get user_context features 
-            batch_user_context_dict = self.get_user_context_features(batch_infer_df)
+            batch_user_context_dict = self.get_context_features(batch_infer_df)
             
             # get candidates features
             batch_candidates_dict = self.get_candidates_features(batch_candidates_df)
@@ -73,13 +84,13 @@ class InferenceEngine(object):
             for key in feed_dict:
                 feed_dict[key] = np.array(feed_dict[key])
             batch_outputs = self.ort_session.run(
-                output_names=["test_output"],
+                output_names=["output"],
                 input_feed=feed_dict
             )[0]
             batch_ed_time = time.time()
             print(f'batch time: {batch_ed_time - batch_st_time}s')
             infer_res.append(batch_outputs)
-        return np.stack(infer_res, axis=0)
+        return np.concatenate(infer_res, axis=0)
 
     def get_candidates(self, batch_infer_df:pd.DataFrame):
         # candidates_df : [keys: {feat1 : [B, N], feat2 : [B, N]}]
@@ -88,15 +99,47 @@ class InferenceEngine(object):
         batch_candidates = self.candidates_df.loc[batch_keys].reset_index(drop=True)
         return batch_candidates
     
-    def get_user_context_features(self, batch_infer_df:pd.DataFrame): 
+    def get_context_features(self, batch_infer_df:pd.DataFrame): 
         # batch_infer_df : [B, M] 
+        '''
+        context_features:
+        [
+            "user_id",
+            "device_id",
+            "age",
+            "gender",
+            "province", 
+            {"seq_effective_50" : ["video_id", "author_id", "category_level_two", "category_level_one", "upload_type"]}
+        ]
+        ''' 
+        
         batch_infer_df = batch_infer_df.rename(mapper=(lambda col: col.strip(' ')), axis='columns')
         
         # user and context side features 
+        context_features = [sub_feat for feat in self.feature_config['context_features'] 
+                            for sub_feat in (list(feat.keys()) if isinstance(feat, dict) else [feat])]
         user_context_dict = self._row_get_features(
             batch_infer_df, 
-            self.feature_config['user_context_features'], 
-            [self.feature_cache_config['features'][feat] for feat in self.feature_config['user_context_features']])
+            context_features, 
+            [self.feature_cache_config['features'][feat] for feat in context_features])
+        
+        for feat in self.feature_config['context_features']:
+            if isinstance(feat, dict):
+                for feat_name, feat_fields in feat.items():
+                    cur_dict = defaultdict(list) 
+                    if isinstance(user_context_dict[feat_name][0], Iterable):
+                        for seq in user_context_dict[feat_name]:
+                            for field in feat_fields: 
+                                cur_list = [getattr(proto, field) for proto in seq]
+                                cur_dict[feat_name + '_' + field].append(cur_list)
+                        user_context_dict.update(cur_dict)  
+                        del user_context_dict[feat_name]
+                    else:
+                        for proto in user_context_dict[feat_name]:
+                            for field in feat_fields:
+                                cur_dict[feat_name + '_' + field].append(getattr(proto, field))
+                        del user_context_dict[feat_name]
+ 
         return user_context_dict 
 
     def get_candidates_features(self, batch_candidates_df:pd.DataFrame):
@@ -177,4 +220,14 @@ class InferenceEngine(object):
                 res_dict[feat].append(getattr(cur_all_values[cache['key_temp']], cache['field']))
         
         return res_dict
+    
+    def save_output_topk(self, output):
+        output_df = {}
+        output_df['_'.join(self.config['request_features'])] = \
+            self.infer_df.apply(lambda row : '_'.join([str(row[feat]) for feat in self.config['request_features']]),
+                                axis='columns')
+        output_df[self.feature_config['fiid']] = output.tolist()
+        output_df = pd.DataFrame(output_df)
+        output_df.to_feather(self.config['output_save_path'])
+
 

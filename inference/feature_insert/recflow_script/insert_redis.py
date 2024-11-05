@@ -50,8 +50,16 @@ for row in tqdm(test_user_info):
     user_timestamp.age = row[4]
     user_timestamp.gender = row[5]
     user_timestamp.province = row[6]
-    user_timestamp.seq_effective_50.extend(list(row[7:]))
     
+    for behavior in np.split(test_user_info[0][7:], len(test_user_info[0][7:]) // 6):
+        item = user_timestamp.seq_effective_50.add()
+        item.video_id = behavior[0]
+        item.author_id = behavior[1]
+        item.category_level_two = behavior[2]
+        item.category_level_one = behavior[3]
+        item.upload_type = behavior[4]
+        item.request_timestamp = behavior[5]
+
     # 1. 序列化 Protobuf 对象为二进制数据
     serialized_data = user_timestamp.SerializeToString()
 

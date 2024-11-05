@@ -1,3 +1,0 @@
-dataset: recflow 
-user_context_features: ['user_id', 'request_timestamp', 'device_id', 'age', 'gender', 'seq_effective_50']
-item_features: ['video_id', 'author_id', 'category_level_two', 'upload_type', 'upload_timestamp', 'category_level_one']
