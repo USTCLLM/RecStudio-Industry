@@ -2,8 +2,11 @@ from dataclasses import dataclass
 import os
 from typing import Dict, Union, Tuple
 from tqdm import tqdm
+import faiss
+import faiss.contrib.torch_utils
 
 import torch
+
 from rs4industry.model.base import BaseModel
 from rs4industry.data.dataset import DataAttr4Model, ItemDataset
 
@@ -91,10 +94,11 @@ class BaseRetriever(BaseModel):
                     log_pos_prob = None
             else:
                 # no negative sampling, use all items as negative items, such as full softmax
-                neg_item_id = None
-                neg_item_vec, _ = self.get_item_vectors(item_loader)
-                neg_item_vec = self.item_vectors
-                log_pos_prob, log_neg_prob = None, None
+                # neg_item_id = None
+                # neg_item_vec, _ = self.get_item_vectors(item_loader)
+                # neg_item_vec = self.item_vectors
+                # log_pos_prob, log_neg_prob = None, None
+                raise NotImplementedError("Full softmax is not supported for industrial dataset yet.")
             neg_score = self.score_function(query_vec, neg_item_vec)
         else:
             neg_score = None
@@ -120,8 +124,11 @@ class BaseRetriever(BaseModel):
         return self.negative_sampler(query, num_neg)
         
     
-    def forward(self, batch, *args, **kwargs) -> RetrieverModelOutput:
-        output = self.score(batch, *args, **kwargs)
+    def forward(self, batch, cal_loss=False, *args, **kwargs) -> RetrieverModelOutput:
+        if cal_loss:
+            return self.cal_loss(batch, *args, **kwargs)
+        else:
+            output = self.score(batch, *args, **kwargs)
         return output
 
     def cal_loss(self, batch, *args, **kwargs) -> Dict:
@@ -136,19 +143,33 @@ class BaseRetriever(BaseModel):
             return {'loss': loss}
         
     @torch.no_grad()
-    def eval_step(self, batch, k, user_hist=None, chunk_size=2048, *args, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
+    def eval_step(self, batch, k, item_vectors, *args, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
         with torch.no_grad():
             query_vec = self.query_encoder(batch)
             pos_vec = self.item_encoder(batch)
             pos_scores = self.score_function(query_vec, pos_vec)
             # TODO: use faiss to reduce memory usage
-            scores = self.score_all_items(query_vec, chunk_size=chunk_size)
-            more = user_hist.size(1) if user_hist is not None else 0
-            score, topk_idx = torch.topk(scores, k + more, dim=-1)
+            res = faiss.StandardGpuResources()
+            if self.score_function.__class__.__name__ == 'InnerProductScorer':
+                index_flat = faiss.IndexFlatIP(item_vectors.shape[-1])
+            elif self.score_function.__class__.__name__ == 'EuclideanScorer':
+                index_flat = faiss.IndexFlatL2(item_vectors.shape[-1])
+            elif self.score_function.__class__.__name__ == 'CosineScorer':
+                item_vectors = torch.nn.functional.normalize(item_vectors, p=2, dim=-1)
+                pos_vec = torch.nn.functional.normalize(pos_vec, p=2, dim=-1)
+                index_flat = faiss.IndexFlatIP(item_vectors.shape[-1])
+            else:
+                raise NotImplementedError(f"Not supported scorer {self.score_function.__class__.__name__}.")
+            gpu_index = next(self.parameters()).device.index
+            index_flat = faiss.index_cpu_to_gpu(res, gpu_index, index_flat)
+            index_flat.add(item_vectors)
+
+            topk_scores, topk_indices = index_flat.search(query_vec, k)
+
             # we usually do not mask history in industrial settings
-            if pos_scores.dim() < score.dim():
+            if pos_scores.dim() < topk_scores.dim():
                 pos_scores = pos_scores.unsqueeze(-1)
-            all_scores = torch.cat([pos_scores, score], dim=-1) # [B, N + 1]
+            all_scores = torch.cat([pos_scores, topk_scores], dim=-1) # [B, N + 1]
             # sort and get the index of the first item
             _, indice = torch.sort(all_scores, dim=-1, descending=True, stable=True)
             pred = indice[:, :k] == 0
@@ -198,70 +219,3 @@ class BaseRetriever(BaseModel):
         """
         item_feat = item_dataset.get_item_feat(item_id)
         return item_feat
-
-    def get_item_vectors(self, item_loader, show_tqdm=True) -> Tuple[torch.Tensor, torch.Tensor]:
-        all_item_vec = []
-        all_item_id = []
-        device = next(self.parameters()).device
-        if show_tqdm:
-            tbar = tqdm(total=len(item_loader), desc="Getting item vectors", ncols=80)
-        else:
-            tbar = None
-        for item_batch in item_loader:
-            item_batch = {k: v.to(device) for k, v in item_batch.items()}
-            item_vec = self.item_encoder(item_batch)
-            all_item_vec.append(item_vec)
-            all_item_id.append(item_batch[self.fiid].cpu())
-            if tbar is not None:
-                tbar.update(1)
-        all_item_vec = torch.cat(all_item_vec, dim=0)   # [N, D]
-        all_item_id = torch.cat(all_item_id, dim=0) # [N]
-        return all_item_vec, all_item_id
-
-    @torch.no_grad()
-    def update_item_vectors(self, item_loader) -> None:
-        """ Update item vectors and item ids.
-
-        The method does not record the gradients. If you want to retain the gradients in getting item vectors,
-        use `get_item_vectors` instead.
-
-        Args:
-            item_loader (DataLoader): item loader.
-        """
-        # -> [N, D]
-        with torch.no_grad():
-            print("Updating item vectors...")
-            self.item_vectors, self.item_ids = self.get_item_vectors(item_loader)
-            print("Done")
-
-
-    def score_all_items(self, query_vec: torch.Tensor, chunk_size=1024):
-        """ Score all items once, if OOM, then split the item vectors into chunks
-        Args:
-            query_vec (torch.Tensor): [B, D]
-            chunk_size (int): chunk size of item vectors. default is 1024.
-        
-        Returns:
-            scores (torch.Tensor): [B, N]
-        """
-        # try:
-        #     # try to score all items once, if OOM, then split the item vectors into chunks
-        #     scores = self.score_function(query_vec, self.item_vectors)
-        # except torch.cuda.OutOfMemoryError:
-        torch.cuda.empty_cache()
-        item_vectors = self.item_vectors
-        scores = []
-        if chunk_size == query_vec.size(0):
-            chunk_size += 2
-        for i in range(0, len(item_vectors), chunk_size):
-            chunk = item_vectors[i:i+chunk_size, :]
-            scores.append(self.score_function(query_vec, chunk))
-        scores = torch.cat(scores, dim=1)
-        return scores
-
-
-    def save_item_vectors(self, checkpoint_dir: str, item_loader=None):
-        if self.item_vectors is None or self.item_ids is None:
-            self.update_item_vectors(item_loader=item_loader)
-        checkpoint_path = os.path.join(checkpoint_dir, 'item_vectors.pt')
-        torch.save({'item_vectors': self.item_vectors, 'item_ids': self.item_ids}, checkpoint_path)

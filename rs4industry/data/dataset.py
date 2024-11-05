@@ -4,10 +4,10 @@ from dataclasses import dataclass
 from typing import List, Union
 from datetime import datetime
 import pandas as pd
-from operator import itemgetter
 import torch
 from torch.utils.data import IterableDataset, Dataset
 from multiprocessing import Process, Queue, Pool
+from accelerate import Accelerator
 
 from rs4industry.data.client import get_client
 from rs4industry.data.utils.constants import REQUIRED_DATA_CONFIG, DEFAULT_CONFIG
@@ -121,7 +121,7 @@ class ConfigProcessor(object):
         return DataAttr4Model(
             fiid=self.config['item_col'],
             flabels=self.config['labels'],
-            features=list(set(self.config['context_features']+self.config['item_features'])),
+            features=self.config['context_features']+self.config['item_features'],
             context_features=self.config['context_features'],
             item_features=self.config['item_features'],
             seq_features=self.config['seq_features'],
@@ -311,11 +311,12 @@ class DailyDataIterator(object):
 
     def __next__(self):
         if self.cur_idx < len(self.filenames):
-            print(f"Load dataset file {self.filenames[self.cur_idx]}")
             cache_filename = self._data_cache.get('filename', None)
             if cache_filename is not None and self.filenames[self.cur_idx] == cache_filename:
+                print(f"Load dataset file {self.filenames[self.cur_idx]} from cache")
                 data, seq_data = self._data_cache['data'], self._data_cache['seq']
             else:
+                print(f"Load dataset file {self.filenames[self.cur_idx]} from source")
                 data, seq_data = self.load_one_day_data()
                 self._data_cache['filename'] = self.filenames[self.cur_idx]
                 self._data_cache['data'] = data
@@ -344,8 +345,12 @@ class DailyDataIterator(object):
 
 
 class DailyDataset(IterableDataset):
-    def __init__(self, daily_iterator: DailyDataIterator, attrs, shuffle=False, preload=False, **kwargs):
+    def __init__(self, daily_iterator: DailyDataIterator, attrs, shuffle=False, preload=False, seed=42, **kwargs):
         super(DailyDataset, self).__init__(**kwargs)
+        accelerator = Accelerator()
+        self.rank = accelerator.process_index
+        self.num_processes = accelerator.num_processes
+        self.seed = seed
         self.daily_iterator = daily_iterator
         self.config = daily_iterator.config
         self.attrs = attrs
@@ -359,6 +364,7 @@ class DailyDataset(IterableDataset):
 
 
     def __iter__(self):
+        self.seed += 1
         worker_info = torch.utils.data.get_worker_info()
         if worker_info is not None:
             raise NotImplementedError("Not support `num_workers`>0 now.")
@@ -367,6 +373,7 @@ class DailyDataset(IterableDataset):
                 log_df = log_df.sample(frac=1).reset_index(drop=True)
             tensor_dict = df_to_tensor_dict(log_df)
             num_samples = log_df.shape[0]
+            
             if self.preload:
                 # `preload_index` controls when to preload
                 preload_index = int(self.preload_ratio * num_samples)
@@ -385,8 +392,6 @@ class DailyDataset(IterableDataset):
                 if seq_df is not None:
                     seq_data_dict = seq_df.loc[data_dict[self.seq_index_col].item()].to_dict()
                     data_dict['seq'] = seq_data_dict
-                    # seq_data_dict = {f"seq--{k}": v for k, v in seq_data_dict.items()}
-                    # data_dict.update(seq_data_dict)
                 yield data_dict
 
     def get_item_feat(self, item_ids: torch.Tensor):

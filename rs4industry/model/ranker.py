@@ -70,8 +70,11 @@ class BaseRanker(BaseModel):
         return get_modules("loss", "BCELoss")(reduction='mean')
     
 
-    def forward(self, batch, *args, **kwargs) -> RankerModelOutput:
-        output = self.score(batch, *args, **kwargs)
+    def forward(self, batch, cal_loss=False, *args, **kwargs) -> RankerModelOutput:
+        if cal_loss:
+            return self.cal_loss(batch, *args, **kwargs)
+        else:
+            output = self.score(batch, *args, **kwargs)
         return output
     
 

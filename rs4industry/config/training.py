@@ -14,7 +14,7 @@ class TrainingArguments:
     weight_decay: float = 0.0000
     gradient_accumulation_steps: int = 1
     logging_dir: str = None
-    logging_steps: int = 100
+    logging_steps: int = 10
     evaluation_strategy: str = "epoch"  # epoch or step
     eval_interval: int = 1    # interval between evaluations, epochs or steps
     eval_batch_size: int = 256
