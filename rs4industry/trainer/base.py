@@ -297,7 +297,8 @@ class Trainer(object):
 
     def _check_if_eval(self, epoch, step):
         if self.config.evaluation_strategy == 'epoch':
-            if (epoch % self.config.eval_interval == 0) and (self._last_eval_epoch != epoch):
+            if (epoch % self.config.eval_interval == 0) and (self._last_eval_epoch != epoch) and (epoch != 0):
+                # do not valid before the first epoch
                 self._last_eval_epoch = epoch
                 return True
             return False

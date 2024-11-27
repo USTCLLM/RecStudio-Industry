@@ -36,6 +36,8 @@ class MLPRanker(BaseRanker):
             last_activation=False,
             last_bn=False
         )
-        sigmoid = torch.nn.Sigmoid()
-        return torch.nn.Sequential(pred_mlp, sigmoid)
+        # BCELoss is not good for autocast in distributed training, reminded by pytorch
+        # sigmoid = torch.nn.Sigmoid()
+        # return torch.nn.Sequential(pred_mlp, sigmoid)
+        return pred_mlp
     

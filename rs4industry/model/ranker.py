@@ -67,7 +67,8 @@ class BaseRanker(BaseModel):
         raise NotImplementedError
 
     def get_loss_function(self):
-        return get_modules("loss", "BCELoss")(reduction='mean')
+        # BCELoss is not good for autocast in distributed training, reminded by pytorch
+        return get_modules("loss", "BCEWithLogitLoss")(reduction='mean')
     
 
     def forward(self, batch, cal_loss=False, *args, **kwargs) -> RankerModelOutput:
