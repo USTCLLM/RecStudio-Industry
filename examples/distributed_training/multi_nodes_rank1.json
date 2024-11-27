@@ -1,0 +1,21 @@
+{
+  "compute_environment": "LOCAL_MACHINE",
+  "debug": false,
+  "distributed_type": "MULTI_GPU",
+  "downcast_bf16": "no",
+  "enable_cpu_affinity": false,
+  "gpu_ids": "0,1",
+  "machine_rank": 1,
+  "main_process_ip": "172.16.46.99",
+  "main_process_port": 11000,
+  "main_training_function": "main",
+  "mixed_precision": "fp16",
+  "num_machines": 2,
+  "num_processes": 4,
+  "rdzv_backend": "static",
+  "same_network": true,
+  "tpu_env": [],
+  "tpu_use_cluster": false,
+  "tpu_use_sudo": false,
+  "use_cpu": false
+}
