@@ -4,7 +4,7 @@ from typing import Dict, Tuple, Union
 import torch
 from rs4industry.model.base import BaseModel
 from rs4industry.model.utils import get_modules
-from rs4industry.data.dataset import DataAttr4Model, ItemDataset
+from rs4industry.data.dataset import DataAttr4Model
 from rs4industry.model.module import MultiFeatEmbedding
 from rs4industry.utils import split_batch
 
@@ -63,7 +63,7 @@ class BaseRanker(BaseModel):
         raise NotImplementedError
 
     
-    def get_predition_layer(self):
+    def get_prediction_layer(self):
         raise NotImplementedError
 
     def get_loss_function(self):
