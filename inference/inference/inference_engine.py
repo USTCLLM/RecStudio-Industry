@@ -16,7 +16,11 @@ import onnxruntime as ort
 import yaml
 import json 
 import redis 
+import faiss
 
+import tensorrt as trt
+import pycuda.driver as cuda
+import pycuda.autoinit
 
 class InferenceEngine(object):
 
@@ -29,13 +33,27 @@ class InferenceEngine(object):
         self.feature_config = deepcopy(self.model_ckpt_config['data_attr'])
         with open(config['feature_cache_config_path'], 'r') as f:
             self.feature_cache_config = yaml.safe_load(f)
-
+        with open(config['retrieve_index_config_path'], 'r') as f:
+            self.retrieve_index_config = yaml.safe_load(f)
+        
         # load infer data 
         self.infer_df = pd.read_feather(config['inference_dataset_path'])
 
         # load candidates
-        self.candidates_df = pd.read_feather(config['candidates_path'])
-        self.candidates_df = self.candidates_df.set_index('_'.join(config['request_features']))
+        if config['stage'] == 'retrieve':
+            if config['retrieval_mode'] == 'u2i':
+                self.u2i_index = faiss.read_index(self.retrieve_index_config['u2i_index_path'])
+                self.u2i_index.nprobe = self.retrieve_index_config['nprobe']
+                self.item_ids_table = np.load(self.retrieve_index_config['item_ids_path'])
+            elif config['retrieval_mode'] == 'i2i':
+                self.i2i_redis_client = redis.Redis(host=self.config['i2i_redis_host'], 
+                                    port=self.config['i2i_redis_port'], 
+                                    db=self.config['i2i_redis_db'])
+
+        else:
+            self.candidates_df = pd.read_feather(config['candidates_path'])
+            self.candidates_df = self.candidates_df.set_index('_'.join(config['request_features']))
+            
 
         # load cache protos 
         self.key_temp2proto = {}
@@ -46,18 +64,88 @@ class InferenceEngine(object):
             proto_spec.loader.exec_module(proto_module)
             self.key_temp2proto[key_temp] = getattr(proto_module, proto_dict['class_name'])
 
-        # connect to redis 
+        # connect to redis for feature cache
         self.redis_client = redis.Redis(host=self.feature_cache_config['host'], 
                                         port=self.feature_cache_config['port'], 
                                         db=self.feature_cache_config['db'])
         
         # load model session
-        self.ort_session = self.get_ort_session()
-        print(f'Session is using : {self.ort_session.get_providers()}')
+        if config['infer_mode'] == 'onnx':
+            self.ort_session = self.get_ort_session()
+            print(f'Session is using : {self.ort_session.get_providers()}')
+        elif config['infer_mode'] == 'trt':
+            self.engine = self.get_trt_session()
 
     @abstractmethod
-    def get_ort_session(self, model_ckpt_path) -> ort.InferenceSession:
+    def get_ort_session(self) -> ort.InferenceSession:
         pass 
+    
+    def batch_inference_retrieval(self):
+        # iterate infer data 
+        infer_res = []
+        num_batch = (len(self.infer_df) - 1) // self.config['infer_batch_size'] + 1 
+        for batch_idx in tqdm(range(num_batch)):
+            batch_st_time = time.time()
+            batch_st = batch_idx * self.config['infer_batch_size']
+            batch_ed = (batch_idx + 1) * self.config['infer_batch_size']
+            batch_infer_df = self.infer_df.iloc[batch_st : batch_ed]
+
+            # get user_context features 
+            batch_user_context_dict = self.get_context_features(batch_infer_df)
+            
+            feed_dict = {}
+            feed_dict.update(batch_user_context_dict)
+            for key in feed_dict:
+                feed_dict[key] = np.array(feed_dict[key])
+            # print(feed_dict)
+
+            if self.config['retrieval_mode'] == 'u2i':
+                if self.config['infer_mode'] == 'onnx':
+                    batch_user_embedding = self.ort_session.run(
+                        output_names=["output"],
+                        input_feed=feed_dict
+                    )[0]
+                elif self.config['infer_mode'] == 'trt':
+                    batch_user_embedding = self.infer_with_trt(feed_dict)
+
+                user_embedding_np = batch_user_embedding[:batch_infer_df.shape[0]]
+                D, I = self.u2i_index.search(user_embedding_np, self.config['output_topk'])
+                batch_outputs = I
+            elif self.config['retrieval_mode'] == 'i2i':
+                seq_video_ids = feed_dict['seq_video_id']
+                batch_outputs = self.get_i2i_recommendations(seq_video_ids)
+            
+            print(batch_outputs.shape)
+            batch_ed_time = time.time()
+            print(f'batch time: {batch_ed_time - batch_st_time}s')
+            infer_res.append(batch_outputs)
+        all_res = np.concatenate(infer_res, axis=0)
+        if self.config['retrieval_mode'] == 'u2i':
+            return self.item_ids_table[all_res]
+        else:
+            return all_res
+    
+    def get_i2i_recommendations(self, seq_video_ids_batch):
+        pipeline = self.i2i_redis_client.pipeline()
+        for seq_video_ids in seq_video_ids_batch:
+            for video_id in seq_video_ids:
+                redis_key = f'item:{video_id}'
+                pipeline.get(redis_key)
+        results = pipeline.execute()
+
+        all_top10_items = []
+
+        for result in results:
+            if result:
+                top10_items = result.decode('utf-8').split(',')
+                all_top10_items.extend(top10_items)
+            else:
+                print('Redis returned None for a key')
+
+        all_top10_items = list(map(int, all_top10_items))
+        all_top10_items = np.array(all_top10_items).reshape(seq_video_ids_batch.shape[0], -1)
+
+        return all_top10_items
     
     def batch_inference(self, batch_candidates_df:pd.DataFrame=None):
         '''
@@ -67,7 +155,6 @@ class InferenceEngine(object):
         Returns:
             infer_res: np.ndarray
         '''
-        # iterate infer data 
         infer_res = []
         num_batch = (len(self.infer_df) - 1) // self.config['infer_batch_size'] + 1 
         for batch_idx in tqdm(range(num_batch)):
@@ -257,7 +344,7 @@ class InferenceEngine(object):
                 res_dict[feat].append(getattr(cur_all_values[cache['key_temp']], cache['field']))
         
         return res_dict
-    
+
     def save_output_topk(self, output):
         output_df = {}
         output_df['_'.join(self.config['request_features'])] = \
@@ -266,5 +353,93 @@ class InferenceEngine(object):
         output_df[self.feature_config['fiid']] = output.tolist()
         output_df = pd.DataFrame(output_df)
         output_df.to_feather(self.config['output_save_path'])
+    
+    def build_engine(self, onnx_file_path, engine_file_path):
+        TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+        with trt.Builder(TRT_LOGGER) as builder, builder.create_network(1 << int(trt.NetworkDefinitionCreationFlag.EXPLICIT_BATCH)) as network, trt.OnnxParser(network, TRT_LOGGER) as parser:
+            # Parse ONNX model
+            with open(onnx_file_path, 'rb') as model:
+                if not parser.parse(model.read()):
+                    for error in range(parser.num_errors):
+                        print(parser.get_error(error))
+                    raise RuntimeError('Failed to parse ONNX model')
 
+            # Create builder config
+            config = builder.create_builder_config()
+            config.set_memory_pool_limit(trt.MemoryPoolType.WORKSPACE, 1 << 30)  # 1GB
 
+            # Create optimization profile
+            profile = builder.create_optimization_profile()
+            for i in range(network.num_inputs):
+                input_name = network.get_input(i).name
+                input_shape = network.get_input(i).shape
+                # Set the min, opt, and max shapes for the input
+                min_shape = [1 if dim == -1 else dim for dim in input_shape]
+                opt_shape = [self.config['infer_batch_size'] if dim == -1 else dim for dim in input_shape]
+                max_shape = [self.config['infer_batch_size'] if dim == -1 else dim for dim in input_shape]
+                profile.set_shape(input_name, tuple(min_shape), tuple(opt_shape), tuple(max_shape))
+            config.add_optimization_profile(profile)
+
+            # Build and serialize the engine
+            serialized_engine = builder.build_serialized_network(network, config)
+            with open(engine_file_path, 'wb') as f:
+                f.write(serialized_engine)
+            return serialized_engine
+
+    def load_engine(self, engine_file_path):
+        TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+        with open(engine_file_path, 'rb') as f, trt.Runtime(TRT_LOGGER) as runtime:
+            return runtime.deserialize_cuda_engine(f.read())
+
+    def get_trt_session(self):
+        model_onnx_path = os.path.join(self.config['model_ckpt_path'], 'model_onnx.pb')
+        trt_engine_path = os.path.join(self.config['model_ckpt_path'], 'model_trt.engine')
+
+        # Set the GPU device
+        cuda.Device(self.config['infer_device']).make_context()
+
+        # Build or load the engine
+        if not os.path.exists(trt_engine_path):
+            serialized_engine = self.build_engine(model_onnx_path, trt_engine_path)
+            TRT_LOGGER = trt.Logger(trt.Logger.WARNING)
+            runtime = trt.Runtime(TRT_LOGGER)
+            engine = runtime.deserialize_cuda_engine(serialized_engine)
+        else:
+            engine = self.load_engine(trt_engine_path)
+
+        return engine
+    
+    def infer_with_trt(self, inputs):
+        with self.engine.create_execution_context() as context:
+            stream = cuda.Stream()
+            bindings = [0] * self.engine.num_io_tensors
+
+            input_memory = []
+            output_buffers = {}
+            for i in range(self.engine.num_io_tensors):
+                tensor_name = self.engine.get_tensor_name(i)
+                dtype = trt.nptype(self.engine.get_tensor_dtype(tensor_name))
+                if self.engine.get_tensor_mode(tensor_name) == trt.TensorIOMode.INPUT:
+                    if -1 in tuple(self.engine.get_tensor_shape(tensor_name)):  # dynamic
+                        context.set_input_shape(tensor_name, tuple(self.engine.get_tensor_profile_shape(tensor_name, 0)[2]))
+                    input_mem = cuda.mem_alloc(inputs[tensor_name].nbytes)
+                    bindings[i] = int(input_mem)
+                    context.set_tensor_address(tensor_name, int(input_mem))
+                    cuda.memcpy_htod_async(input_mem, inputs[tensor_name], stream)
+                    input_memory.append(input_mem)
+                else:  # output
+                    shape = tuple(context.get_tensor_shape(tensor_name))
+                    output_buffer = np.empty(shape, dtype=dtype)
+                    output_buffer = np.ascontiguousarray(output_buffer)
+                    output_memory = cuda.mem_alloc(output_buffer.nbytes)
+                    bindings[i] = int(output_memory)
+                    context.set_tensor_address(tensor_name, int(output_memory))
+                    output_buffers[tensor_name] = (output_buffer, output_memory)
+
+            context.execute_async_v3(stream_handle=stream.handle)
+            stream.synchronize()
+
+            for tensor_name, (output_buffer, output_memory) in output_buffers.items():
+                cuda.memcpy_dtoh(output_buffer, output_memory)
+
+        return output_buffers['output'][0]

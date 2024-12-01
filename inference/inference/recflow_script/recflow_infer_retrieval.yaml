@@ -1,0 +1,15 @@
+stage: retrieve
+model_ckpt_path: /data1/home/recstudio/wuchao/saved_model_demo/retrieval_best_ckpt
+feature_cache_config_path: /data1/home/recstudio/wuchao/inference/feature_insert/feature_cache_configs/recflow_feature_cache_config.yaml
+inference_dataset_path: /data1/home/recstudio/wuchao/inference/inference_data/recflow/recflow_infer_data.feather
+output_topk: 10
+request_features: ['user_id', 'request_timestamp']
+output_save_path: /data1/home/recstudio/wuchao/inference/inference_data/recflow/retriever_outputs.feather
+infer_batch_size: 128
+infer_device: 7
+retrieve_index_config_path: /data1/home/recstudio/wuchao/saved_model_demo/retrieve_index_config.yaml
+infer_mode: trt
+retrieval_mode: i2i
+i2i_redis_host: localhost
+i2i_redis_port: 6379
+i2i_redis_db: 4
