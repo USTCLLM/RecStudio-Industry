@@ -1,97 +1,36 @@
 # RecStudio-Industry
+RecStudio4Industry is the first [Pytorch](https://pytorch.org/)-based recommendation system development toolkit aimed at industrial internet applications. It inherits the modular design concept of [RecStudio](https://github.com/USTCLLM/RecStudio), aiming to help algorithm engineers quickly experiment with various modules by modularizing recommendation system models. Additionally, it adds industry-friendly features beyond RecStudio, supporting the rapid construction and deployment of industrial internet recommendation systems. ![This is the framework of RecStudio4Industry](./doc/imgs/framework.png)
 
 
-## 快速入门
+The key industry features are as follows:
 
-### 训练数据准备
-按照[示例](./rs4industry/data/README_zh.md)准备好数据配置json文件.
+- It supports reading data from local and distributed file systems, such as HDFS. Unlike the small-batch datasets used in academia, industrial-level data is often very large and needs to be stored daily in the HDFS distributed file system. Therefore, RecStudio4Industry provides HDFS data reading interfaces to facilitate rapid integration with industrial scenario data. But it still supports reading data from local files for debugging.
 
-### 训练和模型配置
-需要配置训练配置(超参数等)和模型配置(模型结构参数,如hidden size等,根据具体模型而定).
+- It supports various training configurations including single-machine single-card, single-machine multi-card, and distributed multi-machine multi-card training for the engineer's diverse devlopment needs. The huge amount of industrial data often demands higher training time, so RecStudio4Industry offers distributed training interfaces to facilitate rapid distributed training of industrial recommendation models. What's more, we utilize the [Accelerate](https://huggingface.co/docs/transformers/accelerate) to wrap the training process. It allows the engineer to switch between training and debugging by modifying a fews lines of code. 
 
-### 模型训练
-- 召回模型
+- It supports easily deploying recommendation models into the industrial internet and severing the customer's request. RecStudio4Industry contains a high performance inference engine to satisfy the requirements online request's latency. The inference engine compresses the data using [Protocol Buffers](https://github.com/protocolbuffers/protobuf) firstly. It then stores the compressed data into the key-value database [Redis](https://redis.io/). And finally, [ONNX](https://onnx.ai/), [TensorRT](https://github.com/NVIDIA/TensorRT), and [Faiss](https://github.com/facebookresearch/faiss) are integrated into the inference engine to speed up the inference process. 
 
-```python
-from rs4industry.data.dataset import get_datasets
-from rs4industry.model.retriever import MLPRetriever
-from rs4industry.trainer import Trainer
+## Tutorial
+The following tutorial will provide a detailed introduction on training and deploying recommendation models using RecStudio4Industry.
 
-data_config_path = "./examples/data/recflow_retriever.json"
-train_config_path = ".examples/config/mlp_retriever/train.json"
-model_config_path = ".examples/config/mlp_retriever/model.json"
+### Training
+The following tutorial will introduce how to train a recommendation model using RecStudio4Industry. The training process includes the following steps:
 
-model = MLPRanker(data_config, model_config_path)
-trainer.fit(train_data, eval_data)
-```
+1. Configuration of training data.
+2. Model configuration and custom model building.
+3. Lanuch training under local and distributed environments.
+4. Saving and reading of models.
 
+We provide an interactive notebook [tutorial](./doc/tutorials/training/quickstart.ipynb) for the training process. The notebook contains detailed descriptions of each stop and we encourage you to learn RecStudio4Industry by running the notebook steps by yourself.
 
-- 排序模型
+### Deploying
+In the section, we describes how to deploy the trained recommendation models using RecStudio4Industry. Limited by the latency of online request response, there exists some tecniques to speed up the inference process. Sepcifically, the deploying process includes the following steps:
 
-```python
-from rs4industry.data.dataset import get_datasets
-from rs4industry.model.rankers import MLPRanker
-from rs4industry.trainer import Trainer
+1. Compressing the data using Protocol Buffers.
+2. Storing the compressed data into Redis and crossponding configurations.
+3. Configuration and lanuch of Inference Engine.
 
-data_config_path = "./examples/data/recflow_ranker.json"
-train_config_path = ".examples/config/mlp_ranker/train.json"
-model_config_path = ".examples/config/mlp_ranker/model.json"
+We also give an interactive notebook [tutorial](./doc/tutorials/inference/quickstart.ipynb) for the deploying process. The tutorial describes each step in detail and you can run it to be familiar with the deploying. 
 
-model = MLPRanker(data_config, model_config_path)
-trainer.fit(train_data, eval_data)
-```
-
-### 模型加载与推理
-1. 模型加载
-加载训练好的模型需要给定checkpoint路径, 示例如下:
-
-```python
-from rs4industry.model.base import BaseModel
-
-model = BaseModel.from_pretrained("./saves/mlp_test/checkpoints-150")
-
-print(model)
-```
-
-加载过程中会根据配置文件自动加载模型结构和参数.
-
-2. 模型推理
-对于召回模型和排序模型, 其推理的接口不同. 对于召回模型, 其存在两个推理接口, 分别用于召回阶段和粗排阶段.
-
-- `model.encode_query`: 用于将给定的context字典编码为向量,context中每个字典的tensor形状为 [B, *]
-- `model.predict`: 用于为每个context, 对candidate进行topk选择, 返回排序后的indices (不是真实的item id,而是candidate中的下标). 
-
-对于排序模型,只存在 `model.predict` 接口,和召回模型的接口用法一致.
-
-## 开发目标
-### 训练
-#### 优先级-1：数据读取(刘奇，黄旭)
-- [ ] 数据存储形式：以parquet(https://parquet.apache.org/)，parquet是一种列式存储的数据格式，相比于CSV格式，能够节省存储资源，加快数据读取速度。
-- [ ] 存储文件系统：HDFS，先做单机，再做多机分布式
-- [ ] 数据读取：改造pytorch原生的数据读取接口，先单机，后多机分布式。参考实现：https://github.com/DeepRec-AI/DeepRec，https://github.com/tensorflow/tensorflow，
-	- [ ] 准备数据集，转成parquet格式，配置Hadoop HDFS环境（刘奇）
-	- [ ] 数据读取：pyspark(选项-1)（刘奇）
-	- [ ] webdatset(选项-2： https://pytorch.org/blog/efficient-pytorch-io-library-for-large-datasets-many-files-many-gpus/, https://github.com/webdataset/webdataset）（黄旭）
-
-#### 优先级-2：Embedding优化
-- [ ] 动态Embedding Table，动态创建/释放Embedding向量
-- [ ] 特征准入/淘汰
-
-### 推理
-#### 优先级-1：数据读取(陈晓龙，黎武超）
-- [ ] 数据存储形式：以protocol buffer(https://protobuf.dev/)，protocol buffer是一种序列化数据结构的协议。数据压缩率高，适用于数据传输和通信场景。
-- [ ] 存储文件系统：Redis(KV数据库)，先做单机，再做分布式。推理时需要根据user_id, item_id取其对应的特征，KV数据库查询速度快，适用于latency要求严格的推理场景。
-- [ ] 推理服务：改造pytorch/python的数据读取结构，使其能够从redis中读取相应的特征数据，进而进行推理
-- [ ] 召回服务：faiss(https://github.com/facebookresearch/faiss)实现u2i索引召回，i2i召回
-	- [ ] 配置redis环境（陈晓龙）
-	- [ ] 读取redis中的protobuffer数据到pytorch中进行推理（陈晓龙）
-	- [ ] 学会使用protocol buffer，将推理数据集转成protocol buffer格式（黎武超）
-	- [ ] 召回阶段的ANN检索，u2i, i2i faiss（黎武超）
-#### 优先级-2：推理加速（黎武超)
-- [ ] TensorRT：使用TensorRT进行推理加速
-
-### 核心算法测试
-- [ ] 召回：sasrec
-- [ ] 粗排：dssm
-- [ ] 精排：DIN，DCN v2
-- [ ] 数据集效果测试，对齐
+### Data preparation
+In our tutorial, we use the [RecFlow](https://github.com/RecFlow-ICLR/RecFlow) dataset as an example to train recommendation models and deploy them online. The RecFlow dataset includes samples from the exposure space and unexposed items filtered at each stage of Kuaishou's multi-stage RS. The whole RecFlow dataset is too large to be stored in the local file system, and we use HDFS as the storage medium. But we also provide a small sampled RecFlow dataset for learning Recstudio4Industry.
