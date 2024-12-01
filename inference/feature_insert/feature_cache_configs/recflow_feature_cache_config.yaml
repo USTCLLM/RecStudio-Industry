@@ -47,7 +47,7 @@ features:
 key_temp2proto:
   recflow:item:{video_id}:
     class_name: Item
-    module_path: /data1/home/recstudio/xiaolong/rec-studio-industry/inference/feature_insert/protos/recflow_pb2.py
+    module_path: ./inference/feature_insert/protos/recflow_pb2.py
   recflow:user_timestamp:{user_id}_{request_timestamp}:
     class_name: UserTimestamp
-    module_path: /data1/home/recstudio/xiaolong/rec-studio-industry/inference/feature_insert/protos/recflow_pb2.py
+    module_path: ./inference/feature_insert/protos/recflow_pb2.py

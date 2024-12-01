@@ -30,6 +30,13 @@ class RankerInferenceEngine(InferenceEngine):
     
     # TODO: move this function to train
     def get_ort_session(self):
+        """convert pytorch checkpoint to onnx model and then convert onnx model to ort session.
+        
+        Args:
+            None
+        Return: 
+            onnxruntime.InferenceSession: The ONNX Runtime session object.
+        """
         
         # TODO: how to get data_config from self.model_ckpt_config['data_attr']
         data_config_path = "/data1/home/recstudio/huangxu/rec-studio-industry/examples/config/data/recflow_ranker.json"
@@ -99,8 +106,8 @@ class RankerInferenceEngine(InferenceEngine):
         return ort.InferenceSession(model_onnx_path, providers=providers)
     
     # TODO: model should use seq_effective_50 as name of seq feature
-    def get_context_features(self, batch_infer_df: DataFrame):
-        batch_user_context_dict = super().get_context_features(batch_infer_df)
+    def get_user_context_features(self, batch_infer_df: DataFrame):
+        batch_user_context_dict = super().get_user_context_features(batch_infer_df)
         
         for k, v in list(batch_user_context_dict.items()):
             if k.startswith('seq_effective_50_'):

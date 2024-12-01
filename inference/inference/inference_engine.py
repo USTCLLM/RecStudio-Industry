@@ -59,7 +59,14 @@ class InferenceEngine(object):
     def get_ort_session(self, model_ckpt_path) -> ort.InferenceSession:
         pass 
     
-    def batch_inference(self):
+    def batch_inference(self, batch_candidates_df:pd.DataFrame=None):
+        '''
+        batch inference
+        Args:
+            batch_candidates_df: pd.DataFrame: candidates of the batch request. If None, get candidates from self.candidates_df.
+        Returns:
+            infer_res: np.ndarray
+        '''
         # iterate infer data 
         infer_res = []
         num_batch = (len(self.infer_df) - 1) // self.config['infer_batch_size'] + 1 
@@ -68,10 +75,11 @@ class InferenceEngine(object):
             batch_st = batch_idx * self.config['infer_batch_size']
             batch_ed = (batch_idx + 1) * self.config['infer_batch_size']
             batch_infer_df = self.infer_df.iloc[batch_st : batch_ed]
-            batch_candidates_df = self.get_candidates(batch_infer_df)
+            if batch_candidates_df is None:
+                batch_candidates_df = self.get_candidates(batch_infer_df)
 
             # get user_context features 
-            batch_user_context_dict = self.get_context_features(batch_infer_df)
+            batch_user_context_dict = self.get_user_context_features(batch_infer_df)
             
             # get candidates features
             batch_candidates_dict = self.get_candidates_features(batch_candidates_df)
@@ -93,13 +101,35 @@ class InferenceEngine(object):
         return np.concatenate(infer_res, axis=0)
 
     def get_candidates(self, batch_infer_df:pd.DataFrame):
-        # candidates_df : [keys: {feat1 : [B, N], feat2 : [B, N]}]
+
+        '''
+        Obtain a Batch of Candidate items
+
+        Args:
+        - `batch_infer_df` (pd.DataFrame): A DataFrame containing data to be inferred.
+
+        Returns:
+        - pd.DataFrame: A DataFrame containing candidate objects, with keys representing the features of the candidates.
+
+        Notes:
+        - Each row of `candidates_df` contains all features of candidates item of a key, formatted as `{feat1: [N], feat2: [N]}`.
+        - Each row in `batch_infer_df` will generate a key based on the `request_features` field in its configuration.
+        - This key is then used to find the corresponding candidate objects in `candidates_df`, and a DataFrame composed of these candidate objects is returned.
+        '''
+        # candidates_df : [keys: {feat1 : [N], feat2 : [N]}]
         batch_keys = batch_infer_df.apply(lambda row : '_'.join([str(row[feat]) for feat in self.config['request_features']]),
                                           axis='columns')
         batch_candidates = self.candidates_df.loc[batch_keys].reset_index(drop=True)
         return batch_candidates
     
-    def get_context_features(self, batch_infer_df:pd.DataFrame): 
+    def get_user_context_features(self, batch_infer_df:pd.DataFrame): 
+        '''
+        get user and context features from redis
+        Args:
+            batch_infer_df: pd.DataFrame
+        Returns:
+            user_context_dict: dict
+        '''
         # batch_infer_df : [B, M] 
         '''
         context_features:
@@ -143,6 +173,13 @@ class InferenceEngine(object):
         return user_context_dict 
 
     def get_candidates_features(self, batch_candidates_df:pd.DataFrame):
+        '''
+        get candidates features from redis
+        Args:
+            batch_candidates_df: pd.DataFrame
+        Returns:
+            candidates_dict: dict
+        '''
         batch_candidates_df = batch_candidates_df.rename(mapper=(lambda col: col.strip(' ')), axis='columns')
 
         # candidates side features 

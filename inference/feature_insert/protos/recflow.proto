@@ -1,4 +1,4 @@
-syntax = "proto3"; // 指定protobuf的版本
+syntax = "proto3"; // the version of protobuf
 
 package example;
 

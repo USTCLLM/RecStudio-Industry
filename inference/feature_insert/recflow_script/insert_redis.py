@@ -16,7 +16,7 @@ r = redis.Redis(host='localhost', port=6379, db=0)
 test_video_info = pd.read_feather('./inference/feature_data/recflow/realshow_test_video_info.feather')
 for row in tqdm(test_video_info.itertuples(), total=len(test_video_info)):
 
-    # 0. 创建 message 对象
+    # 0. Create a message object
     item = recflow_pb2.Item()
     item.video_id = getattr(row, 'video_id')
     item.author_id = getattr(row, 'author_id')
@@ -25,13 +25,10 @@ for row in tqdm(test_video_info.itertuples(), total=len(test_video_info)):
     item.upload_timestamp = getattr(row, 'upload_timestamp')
     item.category_level_one = getattr(row, 'category_level_one')
     
-    # 1. 序列化 Protobuf 对象为二进制数据
+    # 1. Serialize the Protobuf object into binary data
     serialized_data = item.SerializeToString()
 
-    # 2. 使用 gzip 压缩序列化后的数据
-    # compressed_data = gzip.compress(serialized_data)
-
-    # 3. 将压缩后的数据存储到 Redis 中
+    # 2. Store the compressed data in Redis
     r.set(f"recflow:item:{item.video_id}", serialized_data)
     
 
@@ -41,7 +38,7 @@ print("Item features are stored in Redis.")
 test_user_info = np.load('./inference/feature_data/recflow/test_user_info.npz')['arr_0']
 for row in tqdm(test_user_info):
 
-    # 0. 创建 message 对象
+    # 0. Create a message object 
     user_timestamp = recflow_pb2.UserTimestamp()
     user_timestamp.request_id = row[0]
     user_timestamp.user_id = row[1]
@@ -60,13 +57,10 @@ for row in tqdm(test_user_info):
         item.upload_type = behavior[4]
         item.request_timestamp = behavior[5]
 
-    # 1. 序列化 Protobuf 对象为二进制数据
+    # 1. Serialize the Protobuf object into binary data
     serialized_data = user_timestamp.SerializeToString()
 
-    # 2. 使用 gzip 压缩序列化后的数据
-    # compressed_data = gzip.compress(serialized_data)
-
-    # 3. 将压缩后的数据存储到 Redis 中
+    # 2. Store the compressed data in Redis
     r.set(f"recflow:user_timestamp:{row[1]}_{row[2]}", serialized_data)
 
 print("UserTimestamp features are stored in Redis.")
