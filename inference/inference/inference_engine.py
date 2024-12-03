@@ -18,6 +18,9 @@ import json
 import redis 
 import faiss
 
+import onnx
+import onnxruntime as ort
+
 import tensorrt as trt
 import pycuda.driver as cuda
 import pycuda.autoinit
@@ -33,27 +36,6 @@ class InferenceEngine(object):
         self.feature_config = deepcopy(self.model_ckpt_config['data_attr'])
         with open(config['feature_cache_config_path'], 'r') as f:
             self.feature_cache_config = yaml.safe_load(f)
-        with open(config['retrieve_index_config_path'], 'r') as f:
-            self.retrieve_index_config = yaml.safe_load(f)
-        
-        # load infer data 
-        self.infer_df = pd.read_feather(config['inference_dataset_path'])
-
-        # load candidates
-        if config['stage'] == 'retrieve':
-            if config['retrieval_mode'] == 'u2i':
-                self.u2i_index = faiss.read_index(self.retrieve_index_config['u2i_index_path'])
-                self.u2i_index.nprobe = self.retrieve_index_config['nprobe']
-                self.item_ids_table = np.load(self.retrieve_index_config['item_ids_path'])
-            elif config['retrieval_mode'] == 'i2i':
-                self.i2i_redis_client = redis.Redis(host=self.config['i2i_redis_host'], 
-                                    port=self.config['i2i_redis_port'], 
-                                    db=self.config['i2i_redis_db'])
-
-        else:
-            self.candidates_df = pd.read_feather(config['candidates_path'])
-            self.candidates_df = self.candidates_df.set_index('_'.join(config['request_features']))
-            
 
         # load cache protos 
         self.key_temp2proto = {}
@@ -70,144 +52,48 @@ class InferenceEngine(object):
                                         db=self.feature_cache_config['db'])
         
         # load model session
-        if config['infer_mode'] == 'onnx':
+        self.convert_to_onnx()
+        if config['infer_mode'] == 'ort':
             self.ort_session = self.get_ort_session()
             print(f'Session is using : {self.ort_session.get_providers()}')
-        elif config['infer_mode'] == 'trt':
-            self.engine = self.get_trt_session()
+        if config['infer_mode'] == 'trt':
+            self.engine = self.get_trt_session()    
 
     @abstractmethod
-    def get_ort_session(self) -> ort.InferenceSession:
+    def convert_to_onnx(self):
         pass 
-    
-    def batch_inference_retrieval(self):
-        # iterate infer data 
-        infer_res = []
-        num_batch = (len(self.infer_df) - 1) // self.config['infer_batch_size'] + 1 
-        for batch_idx in tqdm(range(num_batch)):
-            batch_st_time = time.time()
-            batch_st = batch_idx * self.config['infer_batch_size']
-            batch_ed = (batch_idx + 1) * self.config['infer_batch_size']
-            batch_infer_df = self.infer_df.iloc[batch_st : batch_ed]
 
-            # get user_context features 
-            batch_user_context_dict = self.get_context_features(batch_infer_df)
-            
-            feed_dict = {}
-            feed_dict.update(batch_user_context_dict)
-            for key in feed_dict:
-                feed_dict[key] = np.array(feed_dict[key])
-            # print(feed_dict)
-
-            if self.config['retrieval_mode'] == 'u2i':
-                if self.config['infer_mode'] == 'onnx':
-                    batch_user_embedding = self.ort_session.run(
-                        output_names=["output"],
-                        input_feed=feed_dict
-                    )[0]
-                elif self.config['infer_mode'] == 'trt':
-                    batch_user_embedding = self.infer_with_trt(feed_dict)
-
-                user_embedding_np = batch_user_embedding[:batch_infer_df.shape[0]]
-                D, I = self.u2i_index.search(user_embedding_np, self.config['output_topk'])
-                batch_outputs = I
-            elif self.config['retrieval_mode'] == 'i2i':
-                seq_video_ids = feed_dict['seq_video_id']
-                batch_outputs = self.get_i2i_recommendations(seq_video_ids)
-            
-            print(batch_outputs.shape)
-            batch_ed_time = time.time()
-            print(f'batch time: {batch_ed_time - batch_st_time}s')
-            infer_res.append(batch_outputs)
-        all_res = np.concatenate(infer_res, axis=0)
-        if self.config['retrieval_mode'] == 'u2i':
-            return self.item_ids_table[all_res]
-        else:
-            return all_res
-    
-    def get_i2i_recommendations(self, seq_video_ids_batch):
-        pipeline = self.i2i_redis_client.pipeline()
-        for seq_video_ids in seq_video_ids_batch:
-            for video_id in seq_video_ids:
-                redis_key = f'item:{video_id}'
-                pipeline.get(redis_key)
-        results = pipeline.execute()
-
-        all_top10_items = []
-
-        for result in results:
-            if result:
-                top10_items = result.decode('utf-8').split(',')
-                all_top10_items.extend(top10_items)
-            else:
-                print('Redis returned None for a key')
-
-        all_top10_items = list(map(int, all_top10_items))
-        all_top10_items = np.array(all_top10_items).reshape(seq_video_ids_batch.shape[0], -1)
-
-        return all_top10_items
-    
-    def batch_inference(self, batch_candidates_df:pd.DataFrame=None):
+    def batch_inference(self, batch_infer_df:pd.DataFrame, batch_candidates_df:pd.DataFrame):
         '''
         batch inference
         Args:
-            batch_candidates_df: pd.DataFrame: candidates of the batch request. If None, get candidates from self.candidates_df.
+            batch_infer_df: pd.DataFrame: batch of infer request.
+            batch_candidates_df: pd.DataFrame: candidates of the batch request.
         Returns:
-            infer_res: np.ndarray
+            batch_outputs: np.ndarray
         '''
-        infer_res = []
-        num_batch = (len(self.infer_df) - 1) // self.config['infer_batch_size'] + 1 
-        for batch_idx in tqdm(range(num_batch)):
-            batch_st_time = time.time()
-            batch_st = batch_idx * self.config['infer_batch_size']
-            batch_ed = (batch_idx + 1) * self.config['infer_batch_size']
-            batch_infer_df = self.infer_df.iloc[batch_st : batch_ed]
-            if batch_candidates_df is None:
-                batch_candidates_df = self.get_candidates(batch_infer_df)
+        batch_st_time = time.time()
 
-            # get user_context features 
-            batch_user_context_dict = self.get_user_context_features(batch_infer_df)
-            
-            # get candidates features
-            batch_candidates_dict = self.get_candidates_features(batch_candidates_df)
-            # TODO: Cross Features
+        # get user_context features 
+        batch_user_context_dict = self.get_user_context_features(batch_infer_df)
+        
+        # get candidates features
+        batch_candidates_dict = self.get_candidates_features(batch_candidates_df)
+        # TODO: Cross Features
 
-            feed_dict = {}
-            feed_dict.update(batch_user_context_dict)
-            feed_dict.update(batch_candidates_dict)
-            feed_dict['output_topk'] = self.config['output_topk']
-            for key in feed_dict:
-                feed_dict[key] = np.array(feed_dict[key])
-            batch_outputs = self.ort_session.run(
-                output_names=["output"],
-                input_feed=feed_dict
-            )[0]
-            batch_ed_time = time.time()
-            print(f'batch time: {batch_ed_time - batch_st_time}s')
-            infer_res.append(batch_outputs)
-        return np.concatenate(infer_res, axis=0)
-
-    def get_candidates(self, batch_infer_df:pd.DataFrame):
-
-        '''
-        Obtain a Batch of Candidate items
-
-        Args:
-        - `batch_infer_df` (pd.DataFrame): A DataFrame containing data to be inferred.
-
-        Returns:
-        - pd.DataFrame: A DataFrame containing candidate objects, with keys representing the features of the candidates.
-
-        Notes:
-        - Each row of `candidates_df` contains all features of candidates item of a key, formatted as `{feat1: [N], feat2: [N]}`.
-        - Each row in `batch_infer_df` will generate a key based on the `request_features` field in its configuration.
-        - This key is then used to find the corresponding candidate objects in `candidates_df`, and a DataFrame composed of these candidate objects is returned.
-        '''
-        # candidates_df : [keys: {feat1 : [N], feat2 : [N]}]
-        batch_keys = batch_infer_df.apply(lambda row : '_'.join([str(row[feat]) for feat in self.config['request_features']]),
-                                          axis='columns')
-        batch_candidates = self.candidates_df.loc[batch_keys].reset_index(drop=True)
-        return batch_candidates
+        feed_dict = {}
+        feed_dict.update(batch_user_context_dict)
+        feed_dict.update(batch_candidates_dict)
+        feed_dict['output_topk'] = self.config['output_topk']
+        for key in feed_dict:
+            feed_dict[key] = np.array(feed_dict[key])
+        batch_outputs = self.ort_session.run(
+            output_names=["output"],
+            input_feed=feed_dict
+        )[0]
+        batch_ed_time = time.time()
+        # print(f'batch time: {batch_ed_time - batch_st_time}s')
+        return batch_outputs
     
     def get_user_context_features(self, batch_infer_df:pd.DataFrame): 
         '''
@@ -263,7 +149,7 @@ class InferenceEngine(object):
         '''
         get candidates features from redis
         Args:
-            batch_candidates_df: pd.DataFrame
+            batch_candidates_df (pd.DataFrame): shape = [B, N], each row is a list of candidates.
         Returns:
             candidates_dict: dict
         '''
@@ -275,11 +161,12 @@ class InferenceEngine(object):
         num_candidates = len(batch_candidates_df.iloc[0, 0])
         for row in batch_candidates_df.itertuples():
             for col in batch_candidates_df.columns: 
-                if not isinstance(getattr(row, col), np.ndarray):
-                    raise ValueError('All elements of each columns of batch_candidates_df should be list')
+                if (not isinstance(getattr(row, col), np.ndarray)) and (not isinstance(getattr(row, col), list)):
+                    raise ValueError('All elements of each columns of batch_candidates_df should be np.ndarray or list')
                 if num_candidates != len(getattr(row, col)):
                     raise ValueError('All features of one candidates should have equal length!')    
-                flattened_candidates_df[col].extend(getattr(row, col).tolist()) 
+                flattened_candidates_df[col].extend(
+                    getattr(row, col).tolist() if isinstance(getattr(row, col), np.ndarray) else getattr(row, col))
 
         flattened_candidates_df = pd.DataFrame(flattened_candidates_df)
         # get flattened candidate features
@@ -293,7 +180,7 @@ class InferenceEngine(object):
             candidates_dict['candidates_' + key] = [value[i * num_candidates : (i + 1) * num_candidates] \
                                                     for i in range(len(batch_candidates_df))]
 
-        return candidates_dict        
+        return candidates_dict 
 
     def _row_get_features(self, row_df:pd.DataFrame, feats_list, feats_cache_list):
         # each row represents one entry 
@@ -319,7 +206,7 @@ class InferenceEngine(object):
                 pipe.get(key)
             feats_all_values = pipe.execute()
             redis_ed_time = time.time()
-            print(f'redis time : {(redis_ed_time - redis_st_time)}s')
+            # print(f'redis time : {(redis_ed_time - redis_st_time)}s')
         
         parse_st_time = time.time()
         feats_k2p = {}
@@ -328,7 +215,7 @@ class InferenceEngine(object):
             value_proto.ParseFromString(value)
             feats_k2p[key] = value_proto
         parse_ed_time = time.time()
-        print(f'parse time : {(parse_ed_time - parse_st_time)}s')
+        # print(f'parse time : {(parse_ed_time - parse_st_time)}s')
 
         # get feats from these values
         for row in row_df.itertuples():
@@ -353,6 +240,20 @@ class InferenceEngine(object):
         output_df[self.feature_config['fiid']] = output.tolist()
         output_df = pd.DataFrame(output_df)
         output_df.to_feather(self.config['output_save_path'])
+
+    def get_ort_session(self) -> ort.InferenceSession:
+        model_onnx_path = os.path.join(self.config['model_ckpt_path'], 'model_onnx.pb')
+        # print graph
+        onnx_model = onnx.load(model_onnx_path)
+        onnx.checker.check_model(onnx_model)
+        print("=" * 25 + 'comp graph : ' + "=" * 25)
+        print(onnx.helper.printable_graph(onnx_model.graph))
+
+        if self.config['infer_device'] == 'cpu':
+            providers = ["CPUExecutionProvider"]
+        elif isinstance(self.config['infer_device'], int):
+            providers = [("CUDAExecutionProvider", {"device_id": self.config['infer_device']})]
+        return ort.InferenceSession(model_onnx_path, providers=providers)
     
     def build_engine(self, onnx_file_path, engine_file_path):
         TRT_LOGGER = trt.Logger(trt.Logger.WARNING)

@@ -2,21 +2,13 @@ import os
 import sys
 sys.path.append('.')
 import argparse 
-from collections import defaultdict
-import time 
 
 from pandas import DataFrame
 import yaml
-import json 
-import torch 
-import onnx 
-import onnxruntime as ort
-from tqdm import tqdm 
-import numpy as np 
+import torch
 
 from inference.inference.inference_engine import InferenceEngine
-from rs4industry.model.rankers import MLPRanker
-from rs4industry.data.dataset import get_datasets
+from rs4industry.model.base import BaseModel
 
 class RankerInferenceEngine(InferenceEngine):
 
@@ -29,7 +21,7 @@ class RankerInferenceEngine(InferenceEngine):
             self.feature_config['context_features'].append({'seq_effective_50' : self.model_ckpt_config['data_attr']['seq_features']})
     
     # TODO: move this function to train
-    def get_ort_session(self):
+    def convert_to_onnx(self):
         """convert pytorch checkpoint to onnx model and then convert onnx model to ort session.
         
         Args:
@@ -37,12 +29,7 @@ class RankerInferenceEngine(InferenceEngine):
         Return: 
             onnxruntime.InferenceSession: The ONNX Runtime session object.
         """
-        
-        # TODO: how to get data_config from self.model_ckpt_config['data_attr']
-        data_config_path = "/data1/home/recstudio/huangxu/rec-studio-industry/examples/config/data/recflow_ranker.json"
-        (train_data, eval_data), data_config = get_datasets(data_config_path)
-
-        model = MLPRanker(data_config, os.path.join(self.config['model_ckpt_path'], 'model_config.json'))
+        model = BaseModel.from_pretrained(self.config['model_ckpt_path'])
         checkpoint = torch.load(os.path.join(self.config['model_ckpt_path'], 'model.pt'),
                                 map_location=torch.device('cpu'))
         model.load_state_dict(checkpoint)
@@ -92,18 +79,6 @@ class RankerInferenceEngine(InferenceEngine):
             opset_version=15,
             verbose=True
         )
-        
-        # print graph
-        onnx_model = onnx.load(model_onnx_path)
-        onnx.checker.check_model(onnx_model)
-        print("=" * 25 + 'comp graph : ' + "=" * 25)
-        print(onnx.helper.printable_graph(onnx_model.graph))
-
-        if self.config['infer_device'] == 'cpu':
-            providers = ["CPUExecutionProvider"]
-        elif isinstance(self.config['infer_device'], int):
-            providers = [("CUDAExecutionProvider", {"device_id": self.config['infer_device']})]
-        return ort.InferenceSession(model_onnx_path, providers=providers)
     
     # TODO: model should use seq_effective_50 as name of seq feature
     def get_user_context_features(self, batch_infer_df: DataFrame):
@@ -118,6 +93,9 @@ class RankerInferenceEngine(InferenceEngine):
 
 
 if __name__ == '__main__':
+    import pandas as pd
+    import numpy as np
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--infer_config_path", type=str, required=True, help="Inference config file")  
     args = parser.parse_args()
@@ -126,5 +104,15 @@ if __name__ == '__main__':
         config = yaml.safe_load(f)
 
     rank_inference_engine = RankerInferenceEngine(config)
-    ranker_outputs = rank_inference_engine.batch_inference()
-    rank_inference_engine.save_output_topk(ranker_outputs)
+    infer_df = pd.read_feather('inference/inference_data/recflow/recflow_infer_data.feather')
+    item_df = pd.read_feather('inference/feature_data/recflow/realshow_test_video_info.feather')
+    all_item_ids = np.array(item_df['video_id'])
+    for batch_idx in range(10):
+        print(f"This is batch {batch_idx}")
+        batch_st = batch_idx * 128 
+        batch_ed = (batch_idx + 1) * 128 
+        batch_infer_df = infer_df.iloc[batch_st:batch_ed]
+        batch_candidates = np.random.choice(all_item_ids, size=(128, 50))
+        batch_candidates_df = pd.DataFrame({rank_inference_engine.feature_config['fiid']: batch_candidates.tolist()})
+        retriever_outputs = rank_inference_engine.batch_inference(batch_infer_df, batch_candidates_df)
+        print(type(retriever_outputs), retriever_outputs.shape)

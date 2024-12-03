@@ -168,59 +168,65 @@ Running ./inference/feature_insert/recflow_script/run.sh completes the three ste
 
 ### InferenceEngine
 
-[InferenceEngine](https://gitee.com/recstudio-team/rec-studio-industry/blob/master/inference/inference/inference_engine.py#L21) class can be initialized to perform the inference process, which primarily consists of the following steps:
+[InferenceEngine](https://github.com/USTCLLM/RecStudio-Industry/blob/main/inference/inference/inference_engine.py) class can be initialized to perform the inference process, which primarily consists of the following steps:
 
 1. Converting a checkpoint of the recommendation model to an `onnxruntime.InferenceSession`.
-2.	Performing batch inference.
-3.	Outputting the top-k candidate items.
+2. Performing batch inference.
+3. Outputting the top-k candidate items.
 
-We can initialize the InferenceEngine class and perform batch inference as follows:
+Here is an example demonstrating how to use InferenceEngine for batch inference in the ranking stage of Recflow dataset:
 
 ```python
-from inference.inference.inference_engine import InferenceEngine
+import pandas as pd
+import numpy as np
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--infer_config_path", type=str, required=True, help="Inference config file")  
-    args = parser.parse_args()
+parser = argparse.ArgumentParser()
+parser.add_argument("--infer_config_path", type=str, required=True, help="Inference config file")  
+args = parser.parse_args()
 
-    with open(args.infer_config_path, 'r') as f:
-        config = yaml.safe_load(f)
+with open(args.infer_config_path, 'r') as f:
+    config = yaml.safe_load(f)
 
-    rank_inference_engine = InferenceEngine(config)
-    ranker_outputs = rank_inference_engine.batch_inference()
-    rank_inference_engine.save_output_topk(ranker_outputs)
+rank_inference_engine = RankerInferenceEngine(config)
+infer_df = pd.read_feather('inference/inference_data/recflow/recflow_infer_data.feather')
+item_df = pd.read_feather('inference/feature_data/recflow/realshow_test_video_info.feather')
+all_item_ids = np.array(item_df['video_id'])
+for batch_idx in range(10):
+    print(f"This is batch {batch_idx}")
+    batch_st = batch_idx * 128 
+    batch_ed = (batch_idx + 1) * 128 
+    batch_infer_df = infer_df.iloc[batch_st:batch_ed]
+    batch_candidates = np.random.choice(all_item_ids, size=(128, 50))
+    batch_candidates_df = pd.DataFrame({rank_inference_engine.feature_config['fiid']: batch_candidates.tolist()})
+    retriever_outputs = rank_inference_engine.batch_inference(batch_infer_df, batch_candidates_df)
+    print(type(retriever_outputs), retriever_outputs.shape)
 ```
 
-For further reference, check the Recflow ranking stage inference implementation in [rank_stage.py](https://gitee.com/recstudio-team/rec-studio-industry/blob/master/inference/inference/recflow_script/rank_stage.py).
 
 ### Converting a checkpoint to an InferenceSession
-
-The [get_ort_session()](https://gitee.com/recstudio-team/rec-studio-industry/blob/master/inference/inference/inference_engine.py#L59) function in InferenceEngine is used to convert the recommendation model’s checkpoint into an onnxruntime.InferenceSession. The InferenceEngine class invokes the get_ort_session() function within its \_\_init\_\_() method to obtain the inference session, which is then used for inference. Based on the inference session, operator optimization can be considered during the inference process.  For reference, you can check the [get_ort_session()](https://gitee.com/recstudio-team/rec-studio-industry/blob/master/inference/inference/recflow_script/rank_stage.py#L32) function in the ranking stage of the Recflow dataset.
+The [convert_to_onnx()](https://github.com/USTCLLM/RecStudio-Industry/blob/main/inference/inference/inference_engine.py#L63) function in InferenceEngine is used to convert the recommendation model’s checkpoint into an ONNX format. Based on the ONNX model, operator optimization can be considered using TensorRT. The ONNX model is further converted into an ONNX Runtime session or a TensorRT session for inference. Refer to the [convert_to_onnx()](https://github.com/USTCLLM/RecStudio-Industry/blob/main/inference/inference/recflow_script/rank_stage.py#L24) function in the ranking stage of Recflow for more details.
 
 ### Batch inference
 
-Batch inference is implemented in the [InferenceEngine.batch_inference()](https://gitee.com/recstudio-team/rec-studio-industry/blob/master/inference/inference/inference_engine.py#L62) function. It includes the following steps:
+Batch inference is implemented in the [InferenceEngine.batch_inference()](https://github.com/USTCLLM/RecStudio-Industry/blob/main/inference/inference/inference_engine.py#L66) function. It includes the following steps:
 
-​	1.	**Obtain the candidate item set**: The candidate items can be passed directly to the `batch_inference()` function or index from `candidates_df`.
+​	1.	**Fetch user and context features**: The [get_user_context_features()](https://github.com/USTCLLM/RecStudio-Industry/blob/main/inference/inference/inference_engine.py#L98) function is used to obtain user and context features.
 
-​	2.	**Fetch user and context features**: The [get_user_context_features()](https://gitee.com/recstudio-team/rec-studio-industry/blob/master/inference/inference/inference_engine.py#L102) function is used to obtain user and context features.
+​	2.	**Fetch candidate item features**: The [get_candidates_features()](https://github.com/USTCLLM/RecStudio-Industry/blob/main/inference/inference/inference_engine.py#L148) function is used to obtain features for the candidate items.
 
-​	3.	**Fetch candidate item features**: The [get_candidates_features()](https://gitee.com/recstudio-team/rec-studio-industry/blob/master/inference/inference/inference_engine.py#L145) function is used to obtain features for the candidate items.
-
-​	4.	**Feed the features to the inference session**: Feed the features for inference to the inferenece session and return the top-k results.
+​	3.	**Feed the features to the inference session**: Feed the features for inference to the inferenece session and return the top-k results.
 
 ### Customization
 
 Users can extend the `InferenceEngine` class and override its methods to implement custom functionality:
 
-​	•	[get_ort_session()](https://gitee.com/recstudio-team/rec-studio-industry/blob/master/inference/inference/inference_engine.py#L59): Override this method to modify the model conversion process.
+​	•	[convert_to_onnx()](https://github.com/USTCLLM/RecStudio-Industry/blob/main/inference/inference/inference_engine.py#L63): Override this method to modify how to convert torch checkpoint to ONNX model.
 
-​	•	[batch_inference()](https://gitee.com/recstudio-team/rec-studio-industry/blob/master/inference/inference/inference_engine.py#L62): Override this method to customize the batch inference process.
+​	•	[batch_inference()](https://github.com/USTCLLM/RecStudio-Industry/blob/main/inference/inference/inference_engine.py#L66): Override this method to customize the batch inference process.
 
-​	•	[get_user_context_features()](https://gitee.com/recstudio-team/rec-studio-industry/blob/master/inference/inference/inference_engine.py#L102): Override this method to customize how user and context features are fetched.
+​	•	[get_user_context_features()](https://github.com/USTCLLM/RecStudio-Industry/blob/main/inference/inference/inference_engine.py#L98): Override this method to customize how user and context features are fetched.
 
-​	•	[get_candidates_features()](https://gitee.com/recstudio-team/rec-studio-industry/blob/master/inference/inference/inference_engine.py#L145): Override this method to customize how candidate item features are fetched.
+​	•	[get_candidates_features()](https://github.com/USTCLLM/RecStudio-Industry/blob/main/inference/inference/inference_engine.py#L148): Override this method to customize how candidate item features are fetched.
 
 ### Configuration
 
@@ -232,15 +238,7 @@ To initialize the `InferenceEngine` class, an inference configuration file `infe
 
 ​	•	`feature_cache_config_path`: Specifies the path to the feature cache configuration.
 
-​	•	`inference_dataset_path`: Specifies the path to the dataset used for inference.
-
-​	•	`candidates_path`: Specifies the path to the candidate set file.
-
 ​	•	`output_topk`: Specifies the number of top-k items to return from the candidate set.
-
-​	•	`request_features`: Features used to construct the request_key, which serves as the key to index the candidate items set.
-
-​	•	`output_save_path`: Specifies the path to save the inference results.
 
 ​	•	`infer_batch_size`: Specifies the batch size for inference.
 
@@ -250,12 +248,10 @@ To initialize the `InferenceEngine` class, an inference configuration file `infe
 stage: rank 
 model_ckpt_path: saved_model_demo/ranker_best_ckpt
 feature_cache_config_path: inference/feature_insert/feature_cache_configs/recflow_feature_cache_config.yaml
-inference_dataset_path: inference/inference_data/recflow/recflow_infer_data.feather
-candidates_path: inference/inference_data/recflow/candidates_demo.feather
 output_topk: 10
-request_features: ['user_id', 'request_timestamp']
-output_save_path: inference/inference_data/recflow/ranker_outputs.feather
 infer_batch_size: 128
 infer_device: 0
 ```
 
+### Inference Service demo 
+[inference_service.py](https://github.com/USTCLLM/RecStudio-Industry/blob/main/serve/inference_service.py) is a Gradio-based demo showcasing a multi-stage recommendation system inference pipeline using a retrieval and a ranker InferenceEngine. Refer to it for guidance on how to connect different stages of the InferenceEngine.

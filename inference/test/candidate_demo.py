@@ -16,7 +16,7 @@ all_item_ids = np.array(item_df['video_id'])
 
 request_key_list = []
 candidates_list = []
-for row in tqdm(infer_df.itertuples(), total=len(infer_df)):
+for row in tqdm(infer_df.iloc.itertuples(), total=len(infer_df)):
     request_key_list.append('_'.join([str(getattr(row, feat)) for feat in request_features]))
     candidates_list.append(all_item_ids[np.random.choice(len(all_item_ids), 100)].tolist())
 

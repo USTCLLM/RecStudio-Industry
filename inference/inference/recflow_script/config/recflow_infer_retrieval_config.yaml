@@ -1,0 +1,21 @@
+stage: retrieve
+model_ckpt_path: saved_model_demo/retriever_ckpt_demo
+feature_cache_config_path: inference/feature_insert/feature_cache_configs/recflow_feature_cache_config.yaml
+output_topk: 50
+infer_device: 1
+retrieve_index_config:
+
+  gen_item_index: False
+  item_index_path: saved_model_demo/faiss_item_ivf2.index
+  item_ids_path: saved_model_demo/item_ids.npy
+  retrieve_mode: 'u2i'
+  nprobe: 10
+  
+  gen_i2i_index: True 
+  i2i_redis_host: localhost
+  i2i_redis_port: 6379
+  i2i_redis_db: 4
+
+infer_mode: ort
+retrieval_mode: u2i
+infer_batch_size: 1

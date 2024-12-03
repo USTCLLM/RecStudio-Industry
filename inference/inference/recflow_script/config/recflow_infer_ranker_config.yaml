@@ -1,0 +1,7 @@
+stage: rank 
+model_ckpt_path: saved_model_demo/ranker_ckpt_demo
+feature_cache_config_path: inference/feature_insert/feature_cache_configs/recflow_feature_cache_config.yaml
+output_topk: 6
+infer_batch_size: 1
+infer_device: 0
+infer_mode: ort
