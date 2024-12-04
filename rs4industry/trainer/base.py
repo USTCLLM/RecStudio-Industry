@@ -6,6 +6,7 @@ import torch
 import torch.optim as optim
 from torch.utils.data import DataLoader, Dataset
 from accelerate import Accelerator
+from accelerate.utils import set_seed
 
 from rs4industry.utils import get_logger
 from rs4industry.eval import get_eval_metrics
@@ -21,6 +22,7 @@ class Trainer(object):
         self.model_type = model.model_type
         self._check_checkpoint_dir()
 
+        set_seed(self.config.seed)
         self.accelerator = Accelerator()
         if self.accelerator.is_main_process:
             print(model)
@@ -273,6 +275,7 @@ class Trainer(object):
             metrics = self._eval_batch(eval_batch, item_vectors=self.item_vectors, *args, **kwargs)
             eval_outputs.append((metrics, eval_batch_size))
             eval_total_bs += eval_batch_size
+        self.accelerator.wait_for_everyone()
         metrics = self.eval_epoch_end(eval_outputs)
         self._total_eval_samples = eval_total_bs
 

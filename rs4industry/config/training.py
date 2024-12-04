@@ -2,7 +2,6 @@ from dataclasses import dataclass, field
 
 @dataclass
 class TrainingArguments:
-    device: str = "cuda"    # "cuda" or "cpu" or "0,1,2"
     # accelerate
     epochs: int = 10
     optimizer: str = "adam"
@@ -37,6 +36,7 @@ class TrainingArguments:
     # TODO: use below
     learning_rate_schedule: str = "cosine"
     warmup_steps: int = 1000
+    seed: int = 42
 
     @staticmethod
     def from_dict(d):

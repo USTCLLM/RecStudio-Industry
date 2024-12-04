@@ -1,9 +1,8 @@
 {
     "epochs": 1,
-    "train_batch_size": 2048,
+    "train_batch_size": 1024,
     "eval_batch_size": 4096,
-    "device": "cuda:0",
-    "checkpoint_dir": "path_to_save_checkpoint",
+    "checkpoint_dir": "../saves/mlp_ranker",
     "checkpoint_steps": 3000,
     "evaluation_strategy": "epoch",
     "eval_interval": 1,
