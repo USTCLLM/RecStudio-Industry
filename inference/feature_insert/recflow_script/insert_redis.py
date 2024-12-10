@@ -48,7 +48,7 @@ for row in tqdm(test_user_info):
     user_timestamp.gender = row[5]
     user_timestamp.province = row[6]
     
-    for behavior in np.split(test_user_info[0][7:], len(test_user_info[0][7:]) // 6):
+    for behavior in np.split(row[7:], len(row[7:]) // 6):
         item = user_timestamp.seq_effective_50.add()
         item.video_id = behavior[0]
         item.author_id = behavior[1]

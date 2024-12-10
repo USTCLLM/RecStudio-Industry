@@ -87,10 +87,16 @@ class InferenceEngine(object):
         feed_dict['output_topk'] = self.config['output_topk']
         for key in feed_dict:
             feed_dict[key] = np.array(feed_dict[key])
-        batch_outputs = self.ort_session.run(
+        batch_outputs_idx = self.ort_session.run(
             output_names=["output"],
             input_feed=feed_dict
         )[0]
+        # batch_outputs = batch_outputs_idx
+        batch_outputs = []
+        for row_idx, output_idx in enumerate(batch_outputs_idx):
+            batch_outputs.append(
+                np.array(batch_candidates_df.iloc[row_idx][self.feature_config['fiid']])[output_idx])
+        batch_outputs = np.stack(batch_outputs, axis=0)
         batch_ed_time = time.time()
         # print(f'batch time: {batch_ed_time - batch_st_time}s')
         return batch_outputs

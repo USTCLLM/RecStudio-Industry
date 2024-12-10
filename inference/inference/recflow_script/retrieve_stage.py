@@ -86,6 +86,8 @@ class RetrieverInferenceEngine(InferenceEngine):
                 batch_user_embedding = self.infer_with_trt(feed_dict)
 
             user_embedding_np = batch_user_embedding[:batch_infer_df.shape[0]]
+            # user_embedding_noise = np.random.normal(loc=0.0, scale=0.01, size=user_embedding_np.shape)
+            # user_embedding_np = user_embedding_np + user_embedding_noise
             D, I = self.item_index.search(user_embedding_np, self.config['output_topk'])
             batch_outputs = I
         elif self.config['retrieval_mode'] == 'i2i':
